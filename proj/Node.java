@@ -262,7 +262,7 @@ public class Node {
 	}
 
 	private void log(String output, PrintStream stream) {
-		stream.println("Node " + this.addr + ": " + output);
+		stream.println("\nNode " + this.addr + ": " + output);
 	}
 
 	private boolean matchTransferCommand(String command) {

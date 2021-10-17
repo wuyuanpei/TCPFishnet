@@ -36,6 +36,10 @@ public class TCPSock {
 
 	private final long DATATimeout = 1000; // resend Data if timeout
 
+	private final long RECEIVETimeout = 30000; // nothing to receive for this amount of time, then release
+
+	private long receiveTime;
+
 	private State state;
 
 	public int localPort;
@@ -256,7 +260,6 @@ public class TCPSock {
 			try {
 				manager.sendPkt(localAddr, remoteAddr, finPacket.pack());
 				System.out.print("F");
-				System.out.flush();
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
@@ -399,7 +402,19 @@ public class TCPSock {
 	 * End of socket API
 	 */
 
+	// If a socket hasn't receive any package for RECEIVETimeout time, then release
+	public void releaseIfNoReceive() {
+		long timeNow = manager.now();
+		if(receiveTime + RECEIVETimeout <= timeNow) {
+			release();
+		}
+	}
+
 	public void onReceive(Packet packet) {
+
+		receiveTime = manager.now();
+
+		addTimer(RECEIVETimeout, "releaseIfNoReceive", null, null);
 
 		Transport tcpPacket = Transport.unpack(packet.getPayload());
 
@@ -623,7 +638,6 @@ public class TCPSock {
 		else if (type == Transport.FIN) {
 			// simply release itself
 			System.out.print("F");
-			System.out.flush();
 			release();
 			return;
 		}
