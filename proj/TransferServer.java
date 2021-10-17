@@ -81,7 +81,6 @@ public class TransferServer extends FishThread {
 
     private class TransferWorker extends FishThread {
         private TCPSock sock;
-        private long interval;
         private byte[] buf;
         private int pos;
 
@@ -89,7 +88,6 @@ public class TransferServer extends FishThread {
                               long interval, int sz) {
             super(manager, node);
             this.sock = sock;
-            this.interval = interval;
             this.buf = new byte[sz];
             this.pos = 0;
 

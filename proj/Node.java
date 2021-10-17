@@ -34,6 +34,8 @@ public class Node {
 	// TCP manager
 	private TCPManager tcpMan;
 
+	public int currentPacketSeq;
+
 	/**
 	 * Create a new node
 	 * 
@@ -47,6 +49,7 @@ public class Node {
 
 		// Fishnet reliable data transfer
 		this.tcpMan = new TCPManager(this, addr, manager);
+		this.currentPacketSeq = 0;
 	}
 
 	/**
@@ -106,11 +109,11 @@ public class Node {
 	 * Callback method given to manager to invoke when a timer fires.
 	 */
 	public void pingTimedOut() {
-		Iterator iter = this.pings.iterator();
+		Iterator<PingRequest> iter = this.pings.iterator();
 
 		while (iter.hasNext()) {
 
-			PingRequest pingRequest = (PingRequest) iter.next();
+			PingRequest pingRequest = iter.next();
 
 			if ((pingRequest.getTimeSent() + PingTimeout) < this.manager.now()) {
 				try {
@@ -124,7 +127,7 @@ public class Node {
 			}
 		}
 		this.addTimer(PingTimeout, "pingTimedOut");
-		logOutput("timer times out!");
+		//logOutput("timer times out!");
 	}
 
 	private boolean matchPingCommand(String command) {
@@ -135,7 +138,7 @@ public class Node {
 		try {
 			int destAddr = Integer.parseInt(command.substring(0, index));
 			String message = command.substring(index + 1);
-			Packet packet = new Packet(destAddr, this.addr, Packet.MAX_TTL, Protocol.PING_PKT, 0,
+			Packet packet = new Packet(destAddr, this.addr, Packet.MAX_TTL, Protocol.PING_PKT, currentPacketSeq++,
 					Utility.stringToByteArray(message));
 
 			this.send(destAddr, packet);
@@ -158,10 +161,20 @@ public class Node {
 			case Protocol.PING_REPLY_PKT:
 				this.receivePingReply(packet);
 				break;
-
+			
+			// For TCP
+			case Protocol.TRANSPORT_PKT:
+				this.receiveTCPPacket(packet);
+				break;
 			default:
 				logError("Packet with unknown protocol received. Protocol: " + packet.getProtocol());
 		}
+	}
+
+	// receive a TCP packet
+	private void receiveTCPPacket(Packet packet) {
+		logOutput("Received TCP from " + packet.getSrc());
+		tcpMan.onReceive(packet);
 	}
 
 	private void receivePing(Packet packet) {
@@ -169,7 +182,7 @@ public class Node {
 				+ Utility.byteArrayToString(packet.getPayload()));
 
 		try {
-			Packet reply = new Packet(packet.getSrc(), this.addr, Packet.MAX_TTL, Protocol.PING_REPLY_PKT, 0,
+			Packet reply = new Packet(packet.getSrc(), this.addr, Packet.MAX_TTL, Protocol.PING_REPLY_PKT, currentPacketSeq++,
 					packet.getPayload());
 			this.send(packet.getSrc(), reply);
 		} catch (IllegalArgumentException e) {
@@ -179,10 +192,10 @@ public class Node {
 
 	// Check that ping reply matches what was sent
 	private void receivePingReply(Packet packet) {
-		Iterator iter = this.pings.iterator();
+		Iterator<PingRequest> iter = this.pings.iterator();
 		String payload = Utility.byteArrayToString(packet.getPayload());
 		while (iter.hasNext()) {
-			PingRequest pingRequest = (PingRequest) iter.next();
+			PingRequest pingRequest = iter.next();
 			if ((pingRequest.getDestAddr() == packet.getSrc())
 					&& (Utility.byteArrayToString(pingRequest.getMsg()).equals(payload))) {
 
@@ -232,7 +245,7 @@ public class Node {
 	 * @param payload  byte[] Payload to be sent
 	 */
 	public void sendSegment(int srcAddr, int destAddr, int protocol, byte[] payload) {
-		Packet packet = new Packet(destAddr, srcAddr, Packet.MAX_TTL, protocol, 0, payload);
+		Packet packet = new Packet(destAddr, srcAddr, Packet.MAX_TTL, protocol, currentPacketSeq++, payload);
 		this.send(destAddr, packet);
 	}
 
