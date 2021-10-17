@@ -34,9 +34,10 @@ public class TCPSock {
 
 	private final long SYNTimeout = 1000; // resend SYN if timeout
 
-	private final long DATATimeout = 1000; // resend Data if timeout
+	// TODO: This should be variable
+	private final long DATATimeout = 1000; // resend Data if timeout 
 
-	private final long RECEIVETimeout = 30000; // nothing to receive for this amount of time, then release
+	private final long RECEIVETimeout = 10000; // nothing to receive for this amount of time, then release
 
 	private long receiveTime;
 
