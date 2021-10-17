@@ -104,6 +104,11 @@ public class TCPManager {
 		sockets.add(tcpSock);
 	}
 
+	// remove the socket
+	public void unregisterSock(TCPSock tcpSock) {
+		sockets.remove(tcpSock);
+	}
+
 	// When the manager receives a TCP packet
 	public void onReceive(Packet packet) {
 

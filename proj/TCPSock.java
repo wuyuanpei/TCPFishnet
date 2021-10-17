@@ -235,12 +235,49 @@ public class TCPSock {
 	 * Initiate closure of a connection (graceful shutdown)
 	 */
 	public void close() {
+
+		// for welcome socket
+		if(remoteAddr == -1 || remotePort == -1) {
+			release();
+			return;
+		}
+
+		// for connection socket
+	
+		// client side: no packet that needs resend
+		// server side: always
+		if(nextSeq == startSeq) {
+			// send FIN and shutdown
+			// Send FIN
+			Transport connRefusePacket = new Transport(localPort, remotePort, Transport.FIN, 0, 0, new byte[0]);
+			byte connRefuseByte[] = connRefusePacket.pack();
+			Packet finPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+					node.currentPacketSeq++, connRefuseByte);
+			try {
+				manager.sendPkt(localAddr, remoteAddr, finPacket.pack());
+				System.out.print("F");
+				System.out.flush();
+			} catch (IllegalArgumentException e) {
+				node.logError("Exception: " + e);
+			}
+			release();
+			return;
+
+		}
+		// some packet may still need resend 
+		else {
+			state = State.SHUTDOWN;
+			return;
+		}
+
 	}
 
 	/**
 	 * Release a connection immediately (abortive shutdown)
 	 */
 	public void release() {
+		tcpMan.unregisterSock(this);
+		state = State.CLOSED;
 	}
 
 	/**
@@ -427,6 +464,7 @@ public class TCPSock {
 				connectionSock.remotePort = srcPort;
 				connectionSock.state = State.ESTABLISHED;
 				connectionSock.startSeq = seq + 1; // the first expected data seq
+				connectionSock.nextSeq = seq + 1; // For the server, nextSeq is always equal to startSeq
 
 				connQ.add(connectionSock); // new socket always appends at the end
 			}
@@ -459,6 +497,23 @@ public class TCPSock {
 					startSeq = nextSeq;
 					System.out.print(":");
 					System.out.flush();
+					return;
+				}
+				// Not the expected ACK
+				else {
+					System.out.print("?");
+					System.out.flush();
+					return;
+				}
+			}
+			// ACK for SHUTDOWN
+			else if(state == State.SHUTDOWN) {
+				// The ACK expected
+				if (seq == nextSeq) {
+					startSeq = nextSeq;
+					System.out.print(":");
+					System.out.flush();
+					close(); // call close again
 					return;
 				}
 				// Not the expected ACK
@@ -521,6 +576,7 @@ public class TCPSock {
 					System.out.print("."); // receive an expected packet
 					System.out.flush();
 					startSeq += packetPayload.length;
+					nextSeq = startSeq;
 
 					// send ACK (no need to time out at the server side)
 					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), startSeq, new byte[0]);
@@ -539,6 +595,7 @@ public class TCPSock {
 					// save payload at the socket window
 					writeToWindow(packetPayload);
 
+					return;
 				}
 				// out of order packet or window is full
 				else {
@@ -557,8 +614,18 @@ public class TCPSock {
 					} catch (IllegalArgumentException e) {
 						node.logError("Exception: " + e);
 					}
+					return;
 				}
 			}
+		}
+
+		// For FIN packet
+		else if (type == Transport.FIN) {
+			// simply release itself
+			System.out.print("F");
+			System.out.flush();
+			release();
+			return;
 		}
 
 	}
