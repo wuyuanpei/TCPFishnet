@@ -46,7 +46,7 @@ public class TCPSock {
 	private Node node;
 	private Manager manager;
 
-	private int randomSYN;
+	private int startSeq;
 
 	private int backlog;
 
@@ -63,6 +63,7 @@ public class TCPSock {
 		this.remotePort = -1;
 	}
 
+	// add a timer with a callback function methodName
 	private void addTimer(long deltaT, String methodName) {
 		try {
 			Method method = Callback.getMethod(methodName, this, null);
@@ -154,8 +155,8 @@ public class TCPSock {
 		this.remoteAddr = destAddr;
 
 		// transfer from CLOSED to SYN_SENT
-		this.randomSYN = new Random().nextInt(1000) + 1; // a random number [1, 1000]
-		Transport connRequestPacket = new Transport(localPort, destPort, Transport.SYN, 0, randomSYN, new byte[0]);
+		this.startSeq = new Random().nextInt(1000) + 1; // a random number [1, 1000]
+		Transport connRequestPacket = new Transport(localPort, destPort, Transport.SYN, 0, startSeq, new byte[0]);
 		byte connRequestByte[] = connRequestPacket.pack();
 		Packet packet = new Packet(destAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT, node.currentPacketSeq++,
 				connRequestByte);
@@ -182,7 +183,7 @@ public class TCPSock {
 			return;
 
 		// transfer from CLOSED to SYN_SENT
-		Transport connRequestPacket = new Transport(localPort, remotePort, Transport.SYN, 0, randomSYN, new byte[0]);
+		Transport connRequestPacket = new Transport(localPort, remotePort, Transport.SYN, 0, startSeq, new byte[0]);
 		byte connRequestByte[] = connRequestPacket.pack();
 		Packet packet = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT, node.currentPacketSeq++,
 				connRequestByte);
@@ -221,7 +222,13 @@ public class TCPSock {
 	 *         than len; on failure, -1
 	 */
 	public int write(byte[] buf, int pos, int len) {
-		return -1;
+		// not the correct state
+		if(state != State.ESTABLISHED)
+			return -1;
+		
+		// send a packet
+		Transport tcpPacket = new Transport(localPort, remotePort, Transport.DATA, 1, startSeq + 1, buf);
+		return 0;
 	}
 
 	/**
@@ -282,7 +289,7 @@ public class TCPSock {
 			}
 
 			// Send ACK (there is no need for timeout this packet, as the client who sends SYN will time out)
-			Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, 0, seq, new byte[0]);
+			Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, 0, seq + 1, new byte[0]);
 			byte connAckByte[] = connAckPacket.pack();
 			Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
 					node.currentPacketSeq++, connAckByte);
@@ -311,7 +318,7 @@ public class TCPSock {
 
 			// ACK for SYN
 			if(state == State.SYN_SENT) {
-				if(seq == randomSYN){
+				if(seq == startSeq + 1){
 					state = State.ESTABLISHED;
 					System.out.print("?"); // ACK for SYN
 					System.out.flush();
