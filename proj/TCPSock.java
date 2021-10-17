@@ -1,4 +1,5 @@
 import java.util.Random;
+import java.lang.reflect.Method;
 
 /**
  * <p>
@@ -32,6 +33,8 @@ public class TCPSock {
 		SHUTDOWN // close requested, FIN not sent (due to unsent data in queue)
 	}
 
+	private final long SYNTimeout = 1000; // resend SYN if timeout
+
 	private State state;
 
 	public int localPort;
@@ -58,6 +61,16 @@ public class TCPSock {
 		this.localPort = -1; // not set yet
 		this.remoteAddr = -1;
 		this.remotePort = -1;
+	}
+
+	private void addTimer(long deltaT, String methodName) {
+		try {
+			Method method = Callback.getMethod(methodName, this, null);
+			Callback cb = new Callback(method, this, null);
+			this.manager.addTimer(localAddr, deltaT, cb);
+		} catch (Exception e) {
+			node.logError("Failed to add timer callback. Method Name: " + methodName + "\nException: " + e);
+		}
 	}
 
 	/*
@@ -155,9 +168,34 @@ public class TCPSock {
 		}
 		state = State.SYN_SENT;
 
-		// TODO: timeout and resend SYN
+		// timeout and resend SYN
+		this.addTimer(SYNTimeout, "resendSYN");
 
 		return 0;
+	}
+
+	// resendSYN when timeout
+	// if the state is no longer SYN_SENT, then do nothing
+	public void resendSYN() {
+		// invalid state
+		if (state != State.SYN_SENT)
+			return;
+
+		// transfer from CLOSED to SYN_SENT
+		Transport connRequestPacket = new Transport(localPort, remotePort, Transport.SYN, 0, randomSYN, new byte[0]);
+		byte connRequestByte[] = connRequestPacket.pack();
+		Packet packet = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT, node.currentPacketSeq++,
+				connRequestByte);
+		try {
+			manager.sendPkt(localAddr, remoteAddr, packet.pack());
+			System.out.print("S");
+			System.out.flush();
+		} catch (IllegalArgumentException e) {
+			node.logError("Exception: " + e);
+		}
+
+		// timeout and resend SYN
+		this.addTimer(SYNTimeout, "resendSYN");
 	}
 
 	/**
