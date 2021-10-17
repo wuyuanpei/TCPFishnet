@@ -81,23 +81,7 @@ public class TCPManager {
 		// Finally, return null
 		return null;
 	}
-
-	// count how many sockets have the localPort
-	public int countSocksWithLocalPort(int localPort) {
-
-		Iterator<TCPSock> iter = sockets.iterator();
-
-		int count = 0;
-		
-		while(iter.hasNext()) {
-			TCPSock current = iter.next();
-			if(current.localPort == localPort)
-				count++;
-		}
-
-		return count;
-	}
-
+	
 	// isUsed and registerSock are used by bind in TCPSock
 	// Test whether the same setting is used by other sockets currently
 	public boolean isUsed(int localAddr, int localPort, int remoteAddr, int remotePort) {
@@ -115,6 +99,7 @@ public class TCPManager {
 		return false;
 	}
 
+	// Append the new socket at the end
 	public void registerSock(TCPSock tcpSock) {
 		sockets.add(tcpSock);
 	}

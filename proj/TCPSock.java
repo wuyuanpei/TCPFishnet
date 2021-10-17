@@ -1,4 +1,7 @@
+import java.util.ArrayList;
 import java.util.Random;
+import java.util.Iterator;
+
 import java.lang.reflect.Method;
 
 /**
@@ -53,6 +56,8 @@ public class TCPSock {
 	private int nextSeq; // if startSeq == nextSeq, then ready to send
 
 	private int backlog;
+
+	private ArrayList<TCPSock> connQ; // a connection queue for the welcome socket
 
 	public TCPSock(TCPManager tcpMan, Node node, Manager manager, int localAddr) {
 		this.tcpMan = tcpMan;
@@ -115,6 +120,8 @@ public class TCPSock {
 
 		this.state = State.LISTEN;
 		this.backlog = backlog;
+		this.connQ = new ArrayList<>();
+
 		return 0;
 	}
 
@@ -124,7 +131,15 @@ public class TCPSock {
 	 * @return TCPSock The first established connection on the request queue
 	 */
 	public TCPSock accept() {
-		return null;
+		
+		if(state != State.LISTEN || connQ == null || connQ.size() == 0)
+			return null;
+
+		TCPSock connSock = connQ.remove(0);
+
+		tcpMan.registerSock(connSock);
+
+		return connSock;
 	}
 
 	public boolean isConnectionPending() {
@@ -344,7 +359,7 @@ public class TCPSock {
 			// and get redirected to the connection socket rather than the welcome socket)
 			// or pending connection (include welcome socket) is greater than backlog
 			if ((state != State.LISTEN && state != State.ESTABLISHED) ||
-				(state == State.LISTEN && tcpMan.countSocksWithLocalPort(localPort) > backlog)) {
+				(state == State.LISTEN && connQ.size() >= backlog)) {
 				// Send FIN
 				Transport connRefusePacket = new Transport(destPort, srcPort, Transport.FIN, 0, 0, new byte[0]);
 				byte connRefuseByte[] = connRefusePacket.pack();
@@ -367,21 +382,23 @@ public class TCPSock {
 					node.currentPacketSeq++, connAckByte);
 			try {
 				manager.sendPkt(destAddr, srcAddr, ackPacket.pack());
-				System.out.print("?"); // ACK for SYN
+				System.out.print(":"); // ACK for SYN
 				System.out.flush();
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
 			
 			// create a connection socket if it does not exist
-			if(!tcpMan.isUsed(localAddr, localPort, srcAddr, srcPort)) {
+			// note that it must be a welcome socket
+			if(state == State.LISTEN && !isUsedInConnQ(localAddr, localPort, srcAddr, srcPort) &&
+										 !tcpMan.isUsed(localAddr, localPort, srcAddr, srcPort)) {
 				TCPSock connectionSock = new TCPSock(tcpMan, node, manager, localAddr);
 				connectionSock.localPort = this.localPort;
 				connectionSock.remoteAddr = srcAddr;
 				connectionSock.remotePort = srcPort;
 				connectionSock.state = State.ESTABLISHED;
 
-				tcpMan.registerSock(connectionSock);
+				connQ.add(connectionSock); // new socket always appends at the end
 			}
 			return;
 		} 
@@ -394,7 +411,7 @@ public class TCPSock {
 					startSeq += 1;
 					nextSeq = startSeq;
 					state = State.ESTABLISHED;
-					System.out.print("?"); // ACK for SYN
+					System.out.print(":"); // ACK for SYN
 					System.out.flush();
 					return;
 				} else {
@@ -404,8 +421,46 @@ public class TCPSock {
 					return;
 				}
 			}
+			// ACK for Data
+			else if(state == State.ESTABLISHED) {
+				// The ACK expected
+				if(seq == nextSeq) {
+					startSeq = nextSeq;
+					System.out.print(":");
+					System.out.flush();
+					return;
+				}
+				// Not the expected ACK
+				else {
+					System.out.print("?");
+					System.out.flush();
+					return;
+				}
+			}
+			// ACK for other states
+			else {
+				System.out.print("X");
+				System.out.flush();
+				return;
+			}
 		}
 
 
+	}
+
+	// Test whether the same setting is used by other sockets currently in connQ
+	public boolean isUsedInConnQ(int localAddr, int localPort, int remoteAddr, int remotePort) {
+		Iterator<TCPSock> iter = connQ.iterator();
+		
+		while(iter.hasNext()) {
+			TCPSock current = iter.next();
+			if(current.localAddr == localAddr &&
+				current.localPort == localPort && 
+				current.remoteAddr == remoteAddr &&
+				current.remotePort == remotePort)
+				return true;
+		}
+		
+		return false;
 	}
 }
