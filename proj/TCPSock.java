@@ -29,11 +29,7 @@ public class TCPSock {
 	// TCP socket states
 	enum State {
 		// protocol states
-		CLOSED, 
-		LISTEN, 
-		SYN_SENT, 
-		ESTABLISHED, 
-		SHUTDOWN // close requested, FIN not sent (due to unsent data in queue)
+		CLOSED, LISTEN, SYN_SENT, ESTABLISHED, SHUTDOWN // close requested, FIN not sent (due to unsent data in queue)
 	}
 
 	private final long SYNTimeout = 1000; // resend SYN if timeout
@@ -59,6 +55,17 @@ public class TCPSock {
 
 	private ArrayList<TCPSock> connQ; // a connection queue for the welcome socket
 
+	private byte window[]; // window
+
+	// both pointers need to mod window.length when accessing window
+	// and both pointers are strictly increasing
+	// readPointer must always be less than or equal to writePointer
+	// but their difference cannot be greater than window.length (otherwise, overflow)
+	// available window size equal to: window.length - (writePointer - readPointer)
+	private long readPointer; // read from (called by read())
+
+	private long writePointer; // write to (called by onReceive())
+
 	public TCPSock(TCPManager tcpMan, Node node, Manager manager, int localAddr) {
 		this.tcpMan = tcpMan;
 		this.node = node;
@@ -70,6 +77,12 @@ public class TCPSock {
 		this.localPort = -1; // not set yet
 		this.remoteAddr = -1;
 		this.remotePort = -1;
+
+		// a buffer (window) for receiving packets
+		// the current window is one packet
+		this.window = new byte[Transport.MAX_PAYLOAD_SIZE];
+		this.readPointer = 0L;
+		this.writePointer = 0L;
 	}
 
 	// add a timer with a callback function methodName
@@ -131,8 +144,8 @@ public class TCPSock {
 	 * @return TCPSock The first established connection on the request queue
 	 */
 	public TCPSock accept() {
-		
-		if(state != State.LISTEN || connQ == null || connQ.size() == 0)
+
+		if (state != State.LISTEN || connQ == null || connQ.size() == 0)
 			return null;
 
 		TCPSock connSock = connQ.remove(0);
@@ -204,8 +217,8 @@ public class TCPSock {
 		// transfer from CLOSED to SYN_SENT
 		Transport connRequestPacket = new Transport(localPort, remotePort, Transport.SYN, 0, startSeq, new byte[0]);
 		byte connRequestByte[] = connRequestPacket.pack();
-		Packet packet = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT, node.currentPacketSeq++,
-				connRequestByte);
+		Packet packet = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+				node.currentPacketSeq++, connRequestByte);
 		try {
 			manager.sendPkt(localAddr, remoteAddr, packet.pack());
 			System.out.print("S");
@@ -242,21 +255,21 @@ public class TCPSock {
 	 */
 	public int write(byte[] buf, int pos, int len) {
 		// not the correct state
-		if(state != State.ESTABLISHED)
+		if (state != State.ESTABLISHED)
 			return -1;
 
 		// the previous packet hasn't been ACKed yet
-		if(startSeq != nextSeq)
+		if (startSeq != nextSeq)
 			return -1;
-		
+
 		// prepare a payload
 		int sendLen = Math.min(len, buf.length - pos);
 
 		sendLen = Math.min(sendLen, Transport.MAX_PAYLOAD_SIZE);
 
 		byte tcpPayload[] = new byte[sendLen];
-		
-		for(int i = 0; i < sendLen; i++) {
+
+		for (int i = 0; i < sendLen; i++) {
 			tcpPayload[i] = buf[i + pos];
 		}
 
@@ -264,7 +277,7 @@ public class TCPSock {
 
 		byte tcpByte[] = tcpDataPacket.pack();
 		Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
-						node.currentPacketSeq++, tcpByte);
+				node.currentPacketSeq++, tcpByte);
 		try {
 			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
 			nextSeq += sendLen;
@@ -275,18 +288,23 @@ public class TCPSock {
 		}
 
 		// timeout and resend data
-		this.addTimer(DATATimeout, "resendData", new String[]{"byte[]", "int", "int"}, new Object[]{buf, pos, len});
+		this.addTimer(DATATimeout, "resendData", new String[] { "[B", "java.lang.Integer", "java.lang.Integer" },
+				new Object[] { buf, Integer.valueOf(pos), Integer.valueOf(len) });
 
 		return sendLen;
 	}
 
-	public void resendData(byte[] buf, int pos, int len) {
-		// not the correct state
-		if(state != State.ESTABLISHED)
-			return;
+	public void resendData(byte[] buf, Integer posI, Integer lenI) {
 		
+		int pos = posI.intValue();
+		int len = lenI.intValue();
+
+		// not the correct state
+		if (state != State.ESTABLISHED)
+			return;
+
 		// has been ACKed
-		if(startSeq == nextSeq)
+		if (startSeq == nextSeq)
 			return;
 
 		// prepare a payload
@@ -295,8 +313,8 @@ public class TCPSock {
 		sendLen = Math.min(sendLen, Transport.MAX_PAYLOAD_SIZE);
 
 		byte tcpPayload[] = new byte[sendLen];
-		
-		for(int i = 0; i < sendLen; i++) {
+
+		for (int i = 0; i < sendLen; i++) {
 			tcpPayload[i] = buf[i + pos];
 		}
 
@@ -304,7 +322,7 @@ public class TCPSock {
 
 		byte tcpByte[] = tcpDataPacket.pack();
 		Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
-						node.currentPacketSeq++, tcpByte);
+				node.currentPacketSeq++, tcpByte);
 		try {
 			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
 			System.out.print("!");
@@ -314,7 +332,8 @@ public class TCPSock {
 		}
 
 		/// timeout and resend data
-		this.addTimer(DATATimeout, "resendData", new String[]{"byte[]", "int", "int"}, new Object[]{buf, pos, len});
+		this.addTimer(DATATimeout, "resendData", new String[] { "[B", "java.lang.Integer", "java.lang.Integer" },
+				new Object[] { buf, posI, lenI });
 
 	}
 
@@ -329,7 +348,14 @@ public class TCPSock {
 	 *         len; on failure, -1
 	 */
 	public int read(byte[] buf, int pos, int len) {
-		return -1;
+		// compute read length
+		int readLen = Math.min(len, buf.length - pos);
+		readLen = Math.min(readLen, (int)(writePointer - readPointer));
+
+		for(int i = 0; i < readLen; i++){
+			buf[pos + i] = window[(int)((readPointer++) % (long)window.length)];
+		}
+		return readLen;
 	}
 
 	/*
@@ -347,6 +373,7 @@ public class TCPSock {
 
 		int type = tcpPacket.getType();
 		int seq = tcpPacket.getSeqNum();
+		byte packetPayload[] = tcpPacket.getPayload();
 
 		// for SYN packet
 		if (type == Transport.SYN) {
@@ -358,8 +385,8 @@ public class TCPSock {
 			// (An established socket can receive SYN if the first SYN times out
 			// and get redirected to the connection socket rather than the welcome socket)
 			// or pending connection (include welcome socket) is greater than backlog
-			if ((state != State.LISTEN && state != State.ESTABLISHED) ||
-				(state == State.LISTEN && connQ.size() >= backlog)) {
+			if ((state != State.LISTEN && state != State.ESTABLISHED)
+					|| (state == State.LISTEN && connQ.size() >= backlog)) {
 				// Send FIN
 				Transport connRefusePacket = new Transport(destPort, srcPort, Transport.FIN, 0, 0, new byte[0]);
 				byte connRefuseByte[] = connRefusePacket.pack();
@@ -375,8 +402,10 @@ public class TCPSock {
 				return;
 			}
 
-			// Send ACK (there is no need for timeout this packet, as the client who sends SYN will time out)
-			Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, 0, seq + 1, new byte[0]);
+			// Send ACK (there is no need for timeout this packet, as the client who sends
+			// SYN will time out)
+			// note that availableWindowSize here should be full window for the welcome socket
+			Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), seq + 1, new byte[0]);
 			byte connAckByte[] = connAckPacket.pack();
 			Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
 					node.currentPacketSeq++, connAckByte);
@@ -387,27 +416,29 @@ public class TCPSock {
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
-			
+
 			// create a connection socket if it does not exist
 			// note that it must be a welcome socket
-			if(state == State.LISTEN && !isUsedInConnQ(localAddr, localPort, srcAddr, srcPort) &&
-										 !tcpMan.isUsed(localAddr, localPort, srcAddr, srcPort)) {
+			if (state == State.LISTEN && !isUsedInConnQ(localAddr, localPort, srcAddr, srcPort)
+					&& !tcpMan.isUsed(localAddr, localPort, srcAddr, srcPort)) {
 				TCPSock connectionSock = new TCPSock(tcpMan, node, manager, localAddr);
 				connectionSock.localPort = this.localPort;
 				connectionSock.remoteAddr = srcAddr;
 				connectionSock.remotePort = srcPort;
 				connectionSock.state = State.ESTABLISHED;
+				connectionSock.startSeq = seq + 1; // the first expected data seq
 
 				connQ.add(connectionSock); // new socket always appends at the end
 			}
 			return;
-		} 
+		}
+
 		// for ACK packet
-		else if(type == Transport.ACK) {
+		else if (type == Transport.ACK) {
 
 			// ACK for SYN
-			if(state == State.SYN_SENT) {
-				if(seq == startSeq + 1){
+			if (state == State.SYN_SENT) {
+				if (seq == startSeq + 1) {
 					startSeq += 1;
 					nextSeq = startSeq;
 					state = State.ESTABLISHED;
@@ -422,9 +453,9 @@ public class TCPSock {
 				}
 			}
 			// ACK for Data
-			else if(state == State.ESTABLISHED) {
+			else if (state == State.ESTABLISHED) {
 				// The ACK expected
-				if(seq == nextSeq) {
+				if (seq == nextSeq) {
 					startSeq = nextSeq;
 					System.out.print(":");
 					System.out.flush();
@@ -445,22 +476,118 @@ public class TCPSock {
 			}
 		}
 
+		// For DATA packet
+		else if (type == Transport.DATA) {
+
+			// The connection socket is still in connQ, not in tcpMan.sockets
+			if (srcAddr != remoteAddr || srcPort != remotePort) {
+				// forward to the socket in connQ, if any
+				Iterator<TCPSock> iter = connQ.iterator();
+
+				while (iter.hasNext()) {
+					TCPSock current = iter.next();
+					if (current.localAddr == destAddr && current.localPort == destPort && current.remoteAddr == srcAddr
+							&& current.remotePort == srcPort) {
+						current.onReceive(packet); // forward to the connection socket
+						return;
+					}
+				}
+
+				// no socket, send fin
+				System.out.print("X"); // receive an unexpected packet
+				System.out.flush();
+
+				// Send FIN
+				Transport connRefusePacket = new Transport(destPort, srcPort, Transport.FIN, 0, 0, new byte[0]);
+				byte connRefuseByte[] = connRefusePacket.pack();
+				Packet finPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+						node.currentPacketSeq++, connRefuseByte);
+				try {
+					manager.sendPkt(destAddr, srcAddr, finPacket.pack());
+					System.out.print("F");
+					System.out.flush();
+				} catch (IllegalArgumentException e) {
+					node.logError("Exception: " + e);
+				}
+				return;
+
+			}
+
+			// The current socket in the correct connection socket
+			else {
+
+				// the seq expect
+				if (seq == startSeq && availableWindowSize() >= packetPayload.length) {
+					System.out.print("."); // receive an expected packet
+					System.out.flush();
+					startSeq += packetPayload.length;
+
+					// send ACK (no need to time out at the server side)
+					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), startSeq, new byte[0]);
+					byte connAckByte[] = connAckPacket.pack();
+					Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+							node.currentPacketSeq++, connAckByte);
+					try {
+						manager.sendPkt(destAddr, srcAddr, ackPacket.pack());
+						System.out.print(":");
+						System.out.flush();
+					} catch (IllegalArgumentException e) {
+						node.logError("Exception: " + e);
+					}
+
+					// note that payload is stored before availableWindowSize is sent in ACK
+					// save payload at the socket window
+					writeToWindow(packetPayload);
+
+				}
+				// out of order packet or window is full
+				else {
+					System.out.print("!"); // receive an unexpected packet
+					System.out.flush();
+
+					// send old ACK (no need to time out at the server side)
+					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), startSeq, new byte[0]);
+					byte connAckByte[] = connAckPacket.pack();
+					Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+							node.currentPacketSeq++, connAckByte);
+					try {
+						manager.sendPkt(destAddr, srcAddr, ackPacket.pack());
+						System.out.print("?");
+						System.out.flush();
+					} catch (IllegalArgumentException e) {
+						node.logError("Exception: " + e);
+					}
+				}
+			}
+		}
 
 	}
 
 	// Test whether the same setting is used by other sockets currently in connQ
 	public boolean isUsedInConnQ(int localAddr, int localPort, int remoteAddr, int remotePort) {
 		Iterator<TCPSock> iter = connQ.iterator();
-		
-		while(iter.hasNext()) {
+
+		while (iter.hasNext()) {
 			TCPSock current = iter.next();
-			if(current.localAddr == localAddr &&
-				current.localPort == localPort && 
-				current.remoteAddr == remoteAddr &&
-				current.remotePort == remotePort)
+			if (current.localAddr == localAddr && current.localPort == localPort && current.remoteAddr == remoteAddr
+					&& current.remotePort == remotePort)
 				return true;
 		}
-		
+
 		return false;
+	}
+
+	/* all functions related to window and read/write pointers */
+
+	// available window size
+	private int availableWindowSize() {
+		return (int)((long)window.length - (writePointer - readPointer));
+	}
+
+	// write to window (must be called after checking availableWindowSize)
+	private void writeToWindow(byte payload[]) {
+		for(int i = 0; i < payload.length; i++) {
+			window[(int)((writePointer++) % (long)window.length)] = payload[i];
+		}
 	}
 }

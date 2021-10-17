@@ -173,7 +173,7 @@ public class Node {
 
 	// receive a TCP packet
 	private void receiveTCPPacket(Packet packet) {
-		logOutput("Received TCP from " + packet.getSrc());
+		//logOutput("Received TCP from " + packet.getSrc());
 		tcpMan.onReceive(packet);
 	}
 
