@@ -35,6 +35,8 @@ public class TCPSock {
 
 	private final long SYNTimeout = 1000; // resend SYN if timeout
 
+	private final long DATATimeout = 1000; // resend Data if timeout
+
 	private State state;
 
 	public int localPort;
@@ -46,7 +48,9 @@ public class TCPSock {
 	private Node node;
 	private Manager manager;
 
-	private int startSeq;
+	private int startSeq; // random set initially for SYN
+
+	private int nextSeq; // if startSeq == nextSeq, then ready to send
 
 	private int backlog;
 
@@ -64,10 +68,10 @@ public class TCPSock {
 	}
 
 	// add a timer with a callback function methodName
-	private void addTimer(long deltaT, String methodName) {
+	private void addTimer(long deltaT, String methodName, String paramTypes[], Object params[]) {
 		try {
-			Method method = Callback.getMethod(methodName, this, null);
-			Callback cb = new Callback(method, this, null);
+			Method method = Callback.getMethod(methodName, this, paramTypes);
+			Callback cb = new Callback(method, this, params);
 			this.manager.addTimer(localAddr, deltaT, cb);
 		} catch (Exception e) {
 			node.logError("Failed to add timer callback. Method Name: " + methodName + "\nException: " + e);
@@ -170,7 +174,7 @@ public class TCPSock {
 		state = State.SYN_SENT;
 
 		// timeout and resend SYN
-		this.addTimer(SYNTimeout, "resendSYN");
+		this.addTimer(SYNTimeout, "resendSYN", null, null);
 
 		return 0;
 	}
@@ -196,7 +200,7 @@ public class TCPSock {
 		}
 
 		// timeout and resend SYN
-		this.addTimer(SYNTimeout, "resendSYN");
+		this.addTimer(SYNTimeout, "resendSYN", null, null);
 	}
 
 	/**
@@ -225,10 +229,78 @@ public class TCPSock {
 		// not the correct state
 		if(state != State.ESTABLISHED)
 			return -1;
+
+		// the previous packet hasn't been ACKed yet
+		if(startSeq != nextSeq)
+			return -1;
 		
-		// send a packet
-		Transport tcpPacket = new Transport(localPort, remotePort, Transport.DATA, 1, startSeq + 1, buf);
-		return 0;
+		// prepare a payload
+		int sendLen = Math.min(len, buf.length - pos);
+
+		sendLen = Math.min(sendLen, Transport.MAX_PAYLOAD_SIZE);
+
+		byte tcpPayload[] = new byte[sendLen];
+		
+		for(int i = 0; i < sendLen; i++) {
+			tcpPayload[i] = buf[i + pos];
+		}
+
+		Transport tcpDataPacket = new Transport(localPort, remotePort, Transport.DATA, 1, startSeq, tcpPayload);
+
+		byte tcpByte[] = tcpDataPacket.pack();
+		Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+						node.currentPacketSeq++, tcpByte);
+		try {
+			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
+			nextSeq += sendLen;
+			System.out.print(".");
+			System.out.flush();
+		} catch (IllegalArgumentException e) {
+			node.logError("Exception: " + e);
+		}
+
+		// timeout and resend data
+		this.addTimer(DATATimeout, "resendData", new String[]{"byte[]", "int", "int"}, new Object[]{buf, pos, len});
+
+		return sendLen;
+	}
+
+	public void resendData(byte[] buf, int pos, int len) {
+		// not the correct state
+		if(state != State.ESTABLISHED)
+			return;
+		
+		// has been ACKed
+		if(startSeq == nextSeq)
+			return;
+
+		// prepare a payload
+		int sendLen = Math.min(len, buf.length - pos);
+
+		sendLen = Math.min(sendLen, Transport.MAX_PAYLOAD_SIZE);
+
+		byte tcpPayload[] = new byte[sendLen];
+		
+		for(int i = 0; i < sendLen; i++) {
+			tcpPayload[i] = buf[i + pos];
+		}
+
+		Transport tcpDataPacket = new Transport(localPort, remotePort, Transport.DATA, 1, startSeq, tcpPayload);
+
+		byte tcpByte[] = tcpDataPacket.pack();
+		Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+						node.currentPacketSeq++, tcpByte);
+		try {
+			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
+			System.out.print("!");
+			System.out.flush();
+		} catch (IllegalArgumentException e) {
+			node.logError("Exception: " + e);
+		}
+
+		/// timeout and resend data
+		this.addTimer(DATATimeout, "resendData", new String[]{"byte[]", "int", "int"}, new Object[]{buf, pos, len});
+
 	}
 
 	/**
@@ -319,6 +391,8 @@ public class TCPSock {
 			// ACK for SYN
 			if(state == State.SYN_SENT) {
 				if(seq == startSeq + 1){
+					startSeq += 1;
+					nextSeq = startSeq;
 					state = State.ESTABLISHED;
 					System.out.print("?"); // ACK for SYN
 					System.out.flush();
