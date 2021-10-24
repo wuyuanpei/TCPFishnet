@@ -42,11 +42,12 @@ this.remotePort = -1;
 - ``close()``: this function will shut down the socket gracefully. If the socket is a welcome socket, then call ``release()``. If ``nextSeq == startSeq``, meaning that no packet need to be resent (always true for server side), then send ``FIN`` print ``F`` and ``release()``. Otherwise, do nothing and set the state to ``SHUTDOWN``.
 - ``write()``: this function will send a packet if there is no in-flight packet (i.e., ``startSeq == nextSeq``). The packet will have payload size ``sendLen = Math.min(len, buf.length - pos, Transport.MAX_PAYLOAD_SIZE)``. The packet will have seq number equal to ``startSeq``. After sending the packet, ``nextSeq = startSeq + sendLen``. A timeout will be set to resend the packet if ``ACK`` is not received. Timeout will follow the formula:
 ```
-Timeout = EstRTT + 4 * DevRTT
+alpha = 0.125;
+beta = 0.25;
 EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT
 DevRTT = (1 - beta) * DevRTT + beta * |SampleRTT - EstRTT|
-alpha = 0.125
-beta = 0.25
+Timeout = 1.1 * (EstRTT + 4 * DevRTT); 
+// The constant 1.1 here is used to avoid premature timeout in FishNet
 ```
 - Note that for Part 1 "stop and wait", we do not buffer the content given by the argument of ``write()``. If the ``write`` cannot happen (due to any in-flight packet), ``write`` simply returns 0. Later in part 2, we implement more sophisticated buffer that buffers write.
 - ``read()``: this function will simply read from ``window`` and update ``readPointer``.
@@ -57,3 +58,115 @@ beta = 0.25
 - For receiving ``ACK``: if the current state is ``SYN_SENT`` and ``seq == startSeq + 1``, i.e. this is the ``ACK`` for my ``SYN``, then the state will be set to ``ESTABLISHED``, and ``startSeq += 1``. If the current state is ``ESTABLISHED`` and ``seq == nextSeq`` (i.e., this is the expected ``ACK``), then ``startSeq`` will be set to ``nextSeq``. If the current state is ``SHUTDOWN``, then ``close()`` will be called after receiving an expected ``ACK``.
 - For receiving ``DATA``: if a welcome socket receives a ``DATA`` packet, it will forward it to the socket in ``connQ`` (the socket has not been ``accepted`` yet) if any, otherwise, ``FIN`` will be sent back. If the connection socket receives a ``DATA`` packet, it will first check whether ``seq == startSeq`` (i.e., the packet is expected) and it has enough window size. If so, ``startSeq += payload.length`` and send ``ACK`` with ``seq == startSeq``. Finally, it will save the payload in ``window``. For out of order packet or the case where ``window`` does not have enough space, ``ACK`` with the old ``seq`` will be sent back.
 - For receiving ``FIN`` packet: simply call ``release()`` and print out ``F``. If this is a connection socket and ``onReceive()`` has not been called for a long time, then ``release()`` will be called using the callback timer. Therefore, even if ``FIN`` is lost, a connection socket will eventually be closed. (Note that the server need to explicitly close its welcome socket).
+
+## Part 1 Testing
+### Simulate
+```
+(base) Richards-MacBook-Pro:TCPFishnet wuyuanpei$ perl fishnet.pl simulate 2 scripts/transfertest.fish
+
+Node 0: started
+
+Node 1: started
+
+Node 0: server started, port = 21
+SS::
+Node 0: time = 1005 msec
+
+Node 0: connection accepted
+
+Node 1: time = 1010 msec
+
+Node 1: started
+
+Node 1: bytes to send = 50000
+..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::..::
+Node 1: time = 469010
+
+Node 1: sending completed
+
+Node 1: closing connection...
+FF
+Node 0: time = 470005 msec
+
+Node 0: connection closed
+
+Node 0: total bytes received = 50000
+
+Node 1: time = 470010 msec
+
+Node 1: connection closed
+
+Node 1: total bytes sent = 50000
+
+Node 1: time elapsed = 469000 msec
+
+Node 1: Bps = 106.60980810234541
+Fishnet exiting after time: 1000020 msec.
+Number of packets sent: 939
+Number of packets dropped: 0
+Number of packets lost: 0
+```
+It can be observed that ``total bytes received == total bytes sent == 50000`` without any problem. Note that because both the receiver and the sender print, every symbol is printed out twice, for example, ``..::`` essentially means ``.:``, i.e. one ``DATA`` packet sent and one ``ACK`` received.
+
+At the beginning, we have ``SS::``, ``SYN`` sent and ``ACK`` received. Then we have repeated pattern of ``..::``, ``DATA`` sent and ``ACK`` received, and finally, we have ``FF``.
+
+### Emulate
+Trawler:
+```
+(base) Richards-MacBook-Pro:TCPFishnet wuyuanpei$ perl trawler.pl 8888 scripts/three.topo 
+Trawler awaiting fish...
+Got port 10000: assigning addr: 0
+Got port 10001: assigning addr: 1
+```
+
+Node 0:
+```
+(base) Richards-MacBook-Pro:TCPFishnet wuyuanpei$ perl fishnet.pl emulate localhost 8888 10000
+
+Node 0: started
+server 6 3
+
+Node 0: server started, port = 6
+S:
+Node 0: time = 1635114763360 msec
+
+Node 0: connection accepted
+.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:!?.:!?.:!?.:.:!?.:.:.:.:.:.:.:.:.:.:.:.:.:.:!?.:!?.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:F
+Node 0: time = 1635114858711 msec
+
+Node 0: connection closed
+
+Node 0: total bytes received = 10000
+```
+
+Node 1:
+```
+(base) Richards-MacBook-Pro:TCPFishnet wuyuanpei$ perl fishnet.pl emulate localhost 8888 10001
+
+Node 1: started
+transfer 0 6 5 10000
+S:
+Node 1: time = 1635114764065 msec
+
+Node 1: started
+
+Node 1: bytes to send = 10000
+.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.!:?.!:?.!:?.:.!:?.:.:.:.:.:.:.:.:.:.:.:.:.:.!:?.!:?.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:.:
+Node 1: time = 1635114858457
+
+Node 1: sending completed
+
+Node 1: closing connection...
+F
+Node 1: time = 1635114859458 msec
+
+Node 1: connection closed
+
+Node 1: total bytes sent = 10000
+
+Node 1: time elapsed = 95393 msec
+
+Node 1: Bps = 104.82949482666443
+```
+
+Note that in the emulation mode, we have ``S:`` at the beginning, ``F`` at the end, both ``.:`` and ``!?`` (meaning retransmission and ``ACK`` that does not advance) in the middle. The retransmission is due to premature retransmission caused by the inaccuracy of estimated RTT.

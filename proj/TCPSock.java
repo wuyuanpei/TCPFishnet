@@ -341,7 +341,7 @@ public class TCPSock {
 		}
 
 		// timeout and resend data
-		System.out.println("DATATimeout:" + DATATimeout);
+		//System.out.println("DATATimeout:" + DATATimeout);
 		this.addTimer(DATATimeout, "resendData", new String[] { "[B", "java.lang.Integer", "java.lang.Integer" },
 				new Object[] { buf, Integer.valueOf(pos), Integer.valueOf(len) });
 
@@ -539,6 +539,7 @@ public class TCPSock {
 						estRTT = sampleRTT;
 						devRTT = sampleRTT;
 						DATATimeout = estRTT + 4 * devRTT;
+						DATATimeout *= 1.1;
 						return;
 					}
 					
@@ -547,6 +548,8 @@ public class TCPSock {
 					devRTT = (long)((1.0 - beta) * ((double)devRTT) + beta * (double)Math.abs(sampleRTT - estRTT));
 
 					DATATimeout = estRTT + 4 * devRTT;
+
+					DATATimeout *= 1.1;
 
 					return;
 				}
