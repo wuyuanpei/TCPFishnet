@@ -1,4 +1,5 @@
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Random;
 import java.util.Iterator;
 
@@ -34,10 +35,17 @@ public class TCPSock {
 
 	private final long SYNTimeout = 1000; // resend SYN if timeout
 
-	// TODO: This should be variable
-	private final long DATATimeout = 1000; // resend Data if timeout 
+	private long DATATimeout = 1000; // resend Data if timeout 
 
-	private final long RECEIVETimeout = 10000; // nothing to receive for this amount of time, then release
+	// Estimated RTT to set up DATATimeout
+	private long estRTT = -1;
+	private long devRTT = -1;
+	private final double alpha = 0.125;
+	private final double beta = 0.25;
+	// store the sample RTTs, key is the ACK seq (i.e., nextSeq), value is the data sent time
+	private HashMap<Integer, Long> sampleRTTs; 
+
+	private final long RECEIVETimeout = 20000; // nothing to receive for this amount of time, then release
 
 	private long receiveTime;
 
@@ -88,6 +96,9 @@ public class TCPSock {
 		this.window = new byte[Transport.MAX_PAYLOAD_SIZE];
 		this.readPointer = 0L;
 		this.writePointer = 0L;
+
+		// used to store sample RTTs to estimate RTT and calculate time out
+		this.sampleRTTs = new HashMap<>();
 	}
 
 	// add a timer with a callback function methodName
@@ -322,6 +333,7 @@ public class TCPSock {
 		try {
 			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
 			nextSeq += sendLen;
+			sampleRTTs.put(nextSeq, manager.now());
 			System.out.print(".");
 			System.out.flush();
 		} catch (IllegalArgumentException e) {
@@ -329,6 +341,7 @@ public class TCPSock {
 		}
 
 		// timeout and resend data
+		System.out.println("DATATimeout:" + DATATimeout);
 		this.addTimer(DATATimeout, "resendData", new String[] { "[B", "java.lang.Integer", "java.lang.Integer" },
 				new Object[] { buf, Integer.valueOf(pos), Integer.valueOf(len) });
 
@@ -366,6 +379,8 @@ public class TCPSock {
 				node.currentPacketSeq++, tcpByte);
 		try {
 			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
+			// only consider the first sent and first ACK
+			//sampleRTTs.put(nextSeq, manager.now());
 			System.out.print("!");
 			System.out.flush();
 		} catch (IllegalArgumentException e) {
@@ -402,7 +417,7 @@ public class TCPSock {
 	/*
 	 * End of socket API
 	 */
-
+	
 	// If a socket hasn't receive any package for RECEIVETimeout time, then release
 	public void releaseIfNoReceive() {
 		long timeNow = manager.now();
@@ -413,9 +428,11 @@ public class TCPSock {
 
 	public void onReceive(Packet packet) {
 
-		receiveTime = manager.now();
-
-		addTimer(RECEIVETimeout, "releaseIfNoReceive", null, null);
+		// For connection socket, close if haven't receive anything for a long time
+		if(remoteAddr != -1 && remotePort != -1) {
+			receiveTime = manager.now();
+			addTimer(RECEIVETimeout, "releaseIfNoReceive", null, null);
+		}
 
 		Transport tcpPacket = Transport.unpack(packet.getPayload());
 
@@ -509,10 +526,28 @@ public class TCPSock {
 			// ACK for Data
 			else if (state == State.ESTABLISHED) {
 				// The ACK expected
-				if (seq == nextSeq) {
+				if (seq == nextSeq && startSeq != nextSeq) {
 					startSeq = nextSeq;
 					System.out.print(":");
 					System.out.flush();
+					// update estRTT and devRTT and DATATimeout
+					long sentTime = sampleRTTs.remove(nextSeq).longValue();
+					long sampleRTT = manager.now() - sentTime;
+					
+					// for the first measure
+					if(estRTT == -1) {
+						estRTT = sampleRTT;
+						devRTT = sampleRTT;
+						DATATimeout = estRTT + 4 * devRTT;
+						return;
+					}
+					
+					estRTT = (long)((1.0 - alpha) * ((double)estRTT) + alpha * (double)sampleRTT);
+
+					devRTT = (long)((1.0 - beta) * ((double)devRTT) + beta * (double)Math.abs(sampleRTT - estRTT));
+
+					DATATimeout = estRTT + 4 * devRTT;
+
 					return;
 				}
 				// Not the expected ACK
