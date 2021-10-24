@@ -301,7 +301,7 @@ public class TCPSock {
 
 		// the previous packet hasn't been ACKed yet
 		if (startSeq != nextSeq)
-			return -1;
+			return 0;
 
 		// prepare a payload
 		int sendLen = Math.min(len, buf.length - pos);
