@@ -103,7 +103,6 @@ public class TransferServer extends FishThread {
 
                 int len = buf.length - index;
                 int count = sock.read(buf, index, len);
-				System.out.println("read count=" + count);
 
                 if (count == -1) {
                     // on error, release the socket immediately

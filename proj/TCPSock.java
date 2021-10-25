@@ -92,7 +92,7 @@ public class TCPSock {
 	private long writeWPointer;
 	private long readSafeWPointer;
 
-	private int cwnd = 32;
+	private int cwnd = 16;
 	private int ssthresh = 64 * 1024;
 
 	public TCPSock(TCPManager tcpMan, Node node, Manager manager, int localAddr) {
@@ -832,7 +832,7 @@ public class TCPSock {
 
 	// For debug
 
-	public static final boolean _DEBUG = true;
+	public static final boolean _DEBUG = false;
 
 	// for debug purpose
 	public void printSeqNumbers() {
