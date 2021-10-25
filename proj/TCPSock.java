@@ -48,7 +48,7 @@ public class TCPSock {
 	// sent time
 	private HashMap<Integer, Long> sampleRTTs;
 
-	private final long RECEIVETimeout = 20000; // nothing to receive for this amount of time, then release
+	private final long RECEIVETimeout = 60000; // nothing to receive for this amount of time, then release
 
 	private long receiveTime;
 
@@ -88,9 +88,12 @@ public class TCPSock {
 	private long writePointer; // write to (called by onReceive())
 
 	private byte writeWindow[]; // window for write (at the client side)
-	private long readWPointer;
-	private long writeWPointer;
-	private long readSafeWPointer;
+	// invariance:
+	// writeWPointer >= readWPointer >= readSafeWPointer
+	// (writeWPointer - readSafeWPointer) <= writeWindow.length
+	private long readWPointer; // always points to the first byte that has not been sent (the first time)
+	private long writeWPointer; // always points to the first byte that write() is going to write
+	private long readSafeWPointer; // always points to the first byte that has not been ACKed yet
 
 	private int cwnd = 16;
 	private int ssthresh = 64 * 1024;
@@ -285,7 +288,7 @@ public class TCPSock {
 
 		// client side: no packet that needs resend
 		// server side: always
-		if (seqNumbers.isEmpty()) {
+		if (readSafeWPointer == writeWPointer && seqNumbers.isEmpty()) {
 			// send FIN and shutdown
 			// Send FIN
 			Transport connRefusePacket = new Transport(localPort, remotePort, Transport.FIN, 0, 0, new byte[0]);
@@ -400,7 +403,7 @@ public class TCPSock {
 	}
 
 	
-	// resend all packets until lastSendSeq
+	// resend all packets that has not been ACKed
 	public void resendData(Integer lastSendSeqI) {
 
 		// not the correct state
@@ -413,15 +416,13 @@ public class TCPSock {
 
 		int resendSeq = baseSeq;
 
-		int numResend = seqNumbers.indexOf(lastSendSeqI) + 1; // number of packets to resend
-
 		debug("lastSendSeqI=" + lastSendSeqI.intValue() + " resendSeq=" +resendSeq);
 
 		printSeqNumbers();
 		
 		long tmpPointer = readSafeWPointer;
 		
-		for(int i = 0; i < numResend; i++) {
+		for(int i = 0; i < seqNumbers.size(); i++) {
 
 			int sendPktLen = seqNumbers.get(i) - resendSeq;
 
