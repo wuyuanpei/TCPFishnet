@@ -31,12 +31,13 @@ public class TCPSock {
 	// TCP socket states
 	enum State {
 		// protocol states
-		CLOSED, LISTEN, SYN_SENT, ESTABLISHED, SHUTDOWN // close requested, FIN not sent (due to unsent data in queue)
+		CLOSED, LISTEN, SYN_SENT, ESTABLISHED, 
+		SHUTDOWN // close requested, FIN not sent (due to unsent data in queue); or receive FIN, but read window is not empty
 	}
 
 	private final long SYNTimeout = 1000; // resend SYN if timeout
 
-	private long DATATimeout = 1000; // resend Data if timeout
+	private long DATATimeout = 1000; // resend Data if timeout. This field is calculated by estRTT and devRTT
 
 	// Estimated RTT to set up DATATimeout
 	private long estRTT = -1;
@@ -468,6 +469,10 @@ public class TCPSock {
 		for (int i = 0; i < readLen; i++) {
 			buf[pos + i] = readWindow[(int) ((readPointer++) % (long) readWindow.length)];
 		}
+
+		if(state == State.SHUTDOWN && writePointer == readPointer) {
+			release();
+		}
 		return readLen;
 	}
 
@@ -762,7 +767,11 @@ public class TCPSock {
 		else if (type == Transport.FIN) {
 			// simply release itself
 			System.out.print("F");
-			release();
+			if(readPointer != writePointer) { // still need to be read
+				state = State.SHUTDOWN;
+			} else {
+				release();
+			}
 			return;
 		}
 
