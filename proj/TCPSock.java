@@ -27,6 +27,7 @@ import java.lang.reflect.Method;
  */
 
 public class TCPSock {
+
 	// TCP socket states
 	enum State {
 		// protocol states
@@ -35,15 +36,16 @@ public class TCPSock {
 
 	private final long SYNTimeout = 1000; // resend SYN if timeout
 
-	private long DATATimeout = 1000; // resend Data if timeout 
+	private long DATATimeout = 1000; // resend Data if timeout
 
 	// Estimated RTT to set up DATATimeout
 	private long estRTT = -1;
 	private long devRTT = -1;
 	private final double alpha = 0.125;
 	private final double beta = 0.25;
-	// store the sample RTTs, key is the ACK seq (i.e., nextSeq), value is the data sent time
-	private HashMap<Integer, Long> sampleRTTs; 
+	// store the sample RTTs, key is the ACK seq (i.e., nextSeq), value is the data
+	// sent time
+	private HashMap<Integer, Long> sampleRTTs;
 
 	private final long RECEIVETimeout = 20000; // nothing to receive for this amount of time, then release
 
@@ -60,24 +62,37 @@ public class TCPSock {
 	private Node node;
 	private Manager manager;
 
-	private int startSeq; // random set initially for SYN
+	private int baseSeq; // random set initially for SYN
 
-	private int nextSeq; // if startSeq == nextSeq, then ready to send
+	private int sendSeq;
+
+	private ArrayList<Integer> seqNumbers;
 
 	private int backlog;
 
 	private ArrayList<TCPSock> connQ; // a connection queue for the welcome socket
 
-	private byte window[]; // window
+	private byte readWindow[]; // window for read (at the server side)
+
+	private final int BUFFER_SIZE = 32; // The size for readWindow and writeWindow
+	// In the unit of Transport.MAX_PAYLOAD_SIZE
 
 	// both pointers need to mod window.length when accessing window
 	// and both pointers are strictly increasing
 	// readPointer must always be less than or equal to writePointer
-	// but their difference cannot be greater than window.length (otherwise, overflow)
+	// but their difference cannot be greater than window.length (otherwise,
+	// overflow)
 	// available window size equal to: window.length - (writePointer - readPointer)
 	private long readPointer; // read from (called by read())
-
 	private long writePointer; // write to (called by onReceive())
+
+	private byte writeWindow[]; // window for write (at the client side)
+	private long readWPointer;
+	private long writeWPointer;
+	private long readSafeWPointer;
+
+	private int cwnd = 32;
+	private int ssthresh = 64 * 1024;
 
 	public TCPSock(TCPManager tcpMan, Node node, Manager manager, int localAddr) {
 		this.tcpMan = tcpMan;
@@ -93,12 +108,19 @@ public class TCPSock {
 
 		// a buffer (window) for receiving packets
 		// the current window is one packet
-		this.window = new byte[Transport.MAX_PAYLOAD_SIZE];
+		this.readWindow = new byte[BUFFER_SIZE * Transport.MAX_PAYLOAD_SIZE];
 		this.readPointer = 0L;
 		this.writePointer = 0L;
 
+		this.writeWindow = new byte[BUFFER_SIZE * Transport.MAX_PAYLOAD_SIZE];
+		this.readWPointer = 0L;
+		this.writeWPointer = 0L;
+		this.readSafeWPointer = 0L;
+
 		// used to store sample RTTs to estimate RTT and calculate time out
 		this.sampleRTTs = new HashMap<>();
+
+		this.seqNumbers = new ArrayList<>(); // The sequence of execpted seq numbers that will be ACKed
 	}
 
 	// add a timer with a callback function methodName
@@ -203,8 +225,8 @@ public class TCPSock {
 		this.remoteAddr = destAddr;
 
 		// transfer from CLOSED to SYN_SENT
-		this.startSeq = new Random().nextInt(1000) + 1; // a random number [1, 1000]
-		Transport connRequestPacket = new Transport(localPort, destPort, Transport.SYN, 0, startSeq, new byte[0]);
+		this.baseSeq = new Random().nextInt(1000) + 1; // a random number [1, 1000]
+		Transport connRequestPacket = new Transport(localPort, destPort, Transport.SYN, 0, baseSeq, new byte[0]);
 		byte connRequestByte[] = connRequestPacket.pack();
 		Packet packet = new Packet(destAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT, node.currentPacketSeq++,
 				connRequestByte);
@@ -231,7 +253,7 @@ public class TCPSock {
 			return;
 
 		// transfer from CLOSED to SYN_SENT
-		Transport connRequestPacket = new Transport(localPort, remotePort, Transport.SYN, 0, startSeq, new byte[0]);
+		Transport connRequestPacket = new Transport(localPort, remotePort, Transport.SYN, 0, baseSeq, new byte[0]);
 		byte connRequestByte[] = connRequestPacket.pack();
 		Packet packet = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
 				node.currentPacketSeq++, connRequestByte);
@@ -253,16 +275,16 @@ public class TCPSock {
 	public void close() {
 
 		// for welcome socket
-		if(remoteAddr == -1 || remotePort == -1) {
+		if (remoteAddr == -1 || remotePort == -1) {
 			release();
 			return;
 		}
 
 		// for connection socket
-	
+
 		// client side: no packet that needs resend
 		// server side: always
-		if(nextSeq == startSeq) {
+		if (seqNumbers.isEmpty()) {
 			// send FIN and shutdown
 			// Send FIN
 			Transport connRefusePacket = new Transport(localPort, remotePort, Transport.FIN, 0, 0, new byte[0]);
@@ -279,7 +301,7 @@ public class TCPSock {
 			return;
 
 		}
-		// some packet may still need resend 
+		// some packet may still need resend
 		else {
 			state = State.SHUTDOWN;
 			return;
@@ -310,88 +332,123 @@ public class TCPSock {
 		if (state != State.ESTABLISHED)
 			return -1;
 
-		// the previous packet hasn't been ACKed yet
-		if (startSeq != nextSeq)
+		/*
+		 * // the previous packet hasn't been ACKed yet if (startSeq != nextSeq) return
+		 * 0;
+		 */
+
+		int writeLen = Math.min(len, buf.length - pos);
+
+		writeLen = Math.min(writeLen, availableWWindowSize());
+
+		// Do nothing
+		if (writeLen == 0)
 			return 0;
 
-		// prepare a payload
-		int sendLen = Math.min(len, buf.length - pos);
+		writeToWWindow(buf, pos, writeLen);
 
-		sendLen = Math.min(sendLen, Transport.MAX_PAYLOAD_SIZE);
+		tryToSend();
 
-		byte tcpPayload[] = new byte[sendLen];
-
-		for (int i = 0; i < sendLen; i++) {
-			tcpPayload[i] = buf[i + pos];
-		}
-
-		Transport tcpDataPacket = new Transport(localPort, remotePort, Transport.DATA, 1, startSeq, tcpPayload);
-
-		byte tcpByte[] = tcpDataPacket.pack();
-		Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
-				node.currentPacketSeq++, tcpByte);
-		try {
-			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
-			nextSeq += sendLen;
-			sampleRTTs.put(nextSeq, manager.now());
-			System.out.print(".");
-			System.out.flush();
-		} catch (IllegalArgumentException e) {
-			node.logError("Exception: " + e);
-		}
-
-		// timeout and resend data
-		//System.out.println("DATATimeout:" + DATATimeout);
-		this.addTimer(DATATimeout, "resendData", new String[] { "[B", "java.lang.Integer", "java.lang.Integer" },
-				new Object[] { buf, Integer.valueOf(pos), Integer.valueOf(len) });
-
-		return sendLen;
+		return writeLen;
 	}
 
-	public void resendData(byte[] buf, Integer posI, Integer lenI) {
-		
-		int pos = posI.intValue();
-		int len = lenI.intValue();
+	// try to send packets
+	public void tryToSend() {
+
+		boolean sendSomething = false;
+
+		while (cwnd > 0) {
+
+			int sendPktLen = Math.min(Transport.MAX_PAYLOAD_SIZE, contentLengthWWindow());
+
+			if(sendPktLen == 0) break; // nothing to send
+
+			sendSomething = true;
+
+			byte tcpPayload[] = new byte[sendPktLen];
+			
+			readFromWWindow(tcpPayload, readWPointer);
+
+			readWPointer += sendPktLen;
+
+			Transport tcpDataPacket = new Transport(localPort, remotePort, Transport.DATA, 1, sendSeq, tcpPayload);
+
+			byte tcpByte[] = tcpDataPacket.pack();
+			Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+					node.currentPacketSeq++, tcpByte);
+			try {
+				manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
+				sendSeq += sendPktLen;
+				seqNumbers.add(sendSeq);
+				cwnd--;
+				sampleRTTs.put(sendSeq, manager.now());
+				System.out.print(".");
+				System.out.flush();
+			} catch (IllegalArgumentException e) {
+				node.logError("Exception: " + e);
+			}
+		}
+
+		printSeqNumbers();
+
+		// timeout and resend data
+		debug("DATATimeout:" + DATATimeout);
+		// At least one packet is sent
+		if(sendSomething)
+			this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer"}, new Object[] {Integer.valueOf(sendSeq)});
+	}
+
+	
+	// resend all packets until lastSendSeq
+	public void resendData(Integer lastSendSeqI) {
 
 		// not the correct state
-		if (state != State.ESTABLISHED)
+		if (state != State.ESTABLISHED && state != State.SHUTDOWN)
 			return;
 
 		// has been ACKed
-		if (startSeq == nextSeq)
+		if (!seqNumbers.contains(lastSendSeqI))
 			return;
 
-		// prepare a payload
-		int sendLen = Math.min(len, buf.length - pos);
+		int resendSeq = baseSeq;
 
-		sendLen = Math.min(sendLen, Transport.MAX_PAYLOAD_SIZE);
+		int numResend = seqNumbers.indexOf(lastSendSeqI) + 1; // number of packets to resend
 
-		byte tcpPayload[] = new byte[sendLen];
+		debug("lastSendSeqI=" + lastSendSeqI.intValue() + " resendSeq=" +resendSeq);
 
-		for (int i = 0; i < sendLen; i++) {
-			tcpPayload[i] = buf[i + pos];
+		printSeqNumbers();
+		
+		long tmpPointer = readSafeWPointer;
+		
+		for(int i = 0; i < numResend; i++) {
+
+			int sendPktLen = seqNumbers.get(i) - resendSeq;
+
+			byte tcpPayload[] = new byte[sendPktLen];
+
+			readFromWWindow(tcpPayload, tmpPointer);
+
+			tmpPointer += sendPktLen;
+
+			Transport tcpDataPacket = new Transport(localPort, remotePort, Transport.DATA, 1, resendSeq, tcpPayload);
+
+			byte tcpByte[] = tcpDataPacket.pack();
+			Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
+					node.currentPacketSeq++, tcpByte);
+			try {
+				manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
+				resendSeq += sendPktLen;
+				System.out.print("!");
+				System.out.flush();
+			} catch (IllegalArgumentException e) {
+				node.logError("Exception: " + e);
+			}
 		}
+		// timeout and resend data
+		debug("DATAResendTimeout:" + DATATimeout);
+		this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer"}, new Object[] {lastSendSeqI});
 
-		Transport tcpDataPacket = new Transport(localPort, remotePort, Transport.DATA, 1, startSeq, tcpPayload);
-
-		byte tcpByte[] = tcpDataPacket.pack();
-		Packet tcpPacket = new Packet(remoteAddr, localAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
-				node.currentPacketSeq++, tcpByte);
-		try {
-			manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
-			// only consider the first sent and first ACK
-			//sampleRTTs.put(nextSeq, manager.now());
-			System.out.print("!");
-			System.out.flush();
-		} catch (IllegalArgumentException e) {
-			node.logError("Exception: " + e);
-		}
-
-		/// timeout and resend data
-		this.addTimer(DATATimeout, "resendData", new String[] { "[B", "java.lang.Integer", "java.lang.Integer" },
-				new Object[] { buf, posI, lenI });
-
-	}
+	} 
 
 	/**
 	 * Read from the socket up to len bytes into the buffer buf starting at position
@@ -406,10 +463,10 @@ public class TCPSock {
 	public int read(byte[] buf, int pos, int len) {
 		// compute read length
 		int readLen = Math.min(len, buf.length - pos);
-		readLen = Math.min(readLen, (int)(writePointer - readPointer));
+		readLen = Math.min(readLen, (int) (writePointer - readPointer));
 
-		for(int i = 0; i < readLen; i++){
-			buf[pos + i] = window[(int)((readPointer++) % (long)window.length)];
+		for (int i = 0; i < readLen; i++) {
+			buf[pos + i] = readWindow[(int) ((readPointer++) % (long) readWindow.length)];
 		}
 		return readLen;
 	}
@@ -417,11 +474,11 @@ public class TCPSock {
 	/*
 	 * End of socket API
 	 */
-	
+
 	// If a socket hasn't receive any package for RECEIVETimeout time, then release
 	public void releaseIfNoReceive() {
 		long timeNow = manager.now();
-		if(receiveTime + RECEIVETimeout <= timeNow) {
+		if (receiveTime + RECEIVETimeout <= timeNow) {
 			release();
 		}
 	}
@@ -429,7 +486,7 @@ public class TCPSock {
 	public void onReceive(Packet packet) {
 
 		// For connection socket, close if haven't receive anything for a long time
-		if(remoteAddr != -1 && remotePort != -1) {
+		if (remoteAddr != -1 && remotePort != -1) {
 			receiveTime = manager.now();
 			addTimer(RECEIVETimeout, "releaseIfNoReceive", null, null);
 		}
@@ -474,8 +531,10 @@ public class TCPSock {
 
 			// Send ACK (there is no need for timeout this packet, as the client who sends
 			// SYN will time out)
-			// note that availableWindowSize here should be full window for the welcome socket
-			Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), seq + 1, new byte[0]);
+			// note that availableWindowSize here should be full window for the welcome
+			// socket
+			Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), seq + 1,
+					new byte[0]);
 			byte connAckByte[] = connAckPacket.pack();
 			Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
 					node.currentPacketSeq++, connAckByte);
@@ -496,8 +555,8 @@ public class TCPSock {
 				connectionSock.remoteAddr = srcAddr;
 				connectionSock.remotePort = srcPort;
 				connectionSock.state = State.ESTABLISHED;
-				connectionSock.startSeq = seq + 1; // the first expected data seq
-				connectionSock.nextSeq = seq + 1; // For the server, nextSeq is always equal to startSeq
+				connectionSock.baseSeq = seq + 1; // the first expected data seq
+				//connectionSock.sendSeq = seq + 1; // For the server, nextSeq is always equal to startSeq
 
 				connQ.add(connectionSock); // new socket always appends at the end
 			}
@@ -509,9 +568,9 @@ public class TCPSock {
 
 			// ACK for SYN
 			if (state == State.SYN_SENT) {
-				if (seq == startSeq + 1) {
-					startSeq += 1;
-					nextSeq = startSeq;
+				if (seq == baseSeq + 1) {
+					baseSeq += 1;
+					sendSeq = baseSeq;
 					state = State.ESTABLISHED;
 					System.out.print(":"); // ACK for SYN
 					System.out.flush();
@@ -526,30 +585,34 @@ public class TCPSock {
 			// ACK for Data
 			else if (state == State.ESTABLISHED) {
 				// The ACK expected
-				if (seq == nextSeq && startSeq != nextSeq) {
-					startSeq = nextSeq;
+				if (seqNumbers.size() > 0 && seq == seqNumbers.get(0)) {
+					seqNumbers.remove(0);
+					debug("receive ACK:"+seq);
+					printSeqNumbers();
+					readSafeWPointer += seq - baseSeq; // increment by the length of the packet
+					baseSeq = seq;
 					System.out.print(":");
 					System.out.flush();
+
+					cwnd++;
+
 					// update estRTT and devRTT and DATATimeout
-					long sentTime = sampleRTTs.remove(nextSeq).longValue();
+					long sentTime = sampleRTTs.remove(seq).longValue();
 					long sampleRTT = manager.now() - sentTime;
-					
+
 					// for the first measure
-					if(estRTT == -1) {
+					if (estRTT == -1) {
 						estRTT = sampleRTT;
 						devRTT = sampleRTT;
 						DATATimeout = estRTT + 4 * devRTT;
-						DATATimeout *= 1.1;
-						return;
 					}
-					
-					estRTT = (long)((1.0 - alpha) * ((double)estRTT) + alpha * (double)sampleRTT);
+					else {
+						estRTT = (long) ((1.0 - alpha) * ((double) estRTT) + alpha * (double) sampleRTT);
+						devRTT = (long) ((1.0 - beta) * ((double) devRTT) + beta * (double) Math.abs(sampleRTT - estRTT));
+						DATATimeout = estRTT + 4 * devRTT;
+					}
 
-					devRTT = (long)((1.0 - beta) * ((double)devRTT) + beta * (double)Math.abs(sampleRTT - estRTT));
-
-					DATATimeout = estRTT + 4 * devRTT;
-
-					DATATimeout *= 1.1;
+					tryToSend();
 
 					return;
 				}
@@ -561,12 +624,33 @@ public class TCPSock {
 				}
 			}
 			// ACK for SHUTDOWN
-			else if(state == State.SHUTDOWN) {
+			else if (state == State.SHUTDOWN) {
 				// The ACK expected
-				if (seq == nextSeq) {
-					startSeq = nextSeq;
+				if (seqNumbers.size() > 0 && seq == seqNumbers.get(0)) {
+					seqNumbers.remove(0);
+					debug("receive ACK:"+seq);
+					printSeqNumbers();
+					readSafeWPointer += seq - baseSeq; // increment by the length of the packet
+					baseSeq = seq;
 					System.out.print(":");
 					System.out.flush();
+
+					// update estRTT and devRTT and DATATimeout
+					long sentTime = sampleRTTs.remove(seq).longValue();
+					long sampleRTT = manager.now() - sentTime;
+
+					// for the first measure
+					if (estRTT == -1) {
+						estRTT = sampleRTT;
+						devRTT = sampleRTT;
+						DATATimeout = estRTT + 4 * devRTT;
+					}
+					else {
+						estRTT = (long) ((1.0 - alpha) * ((double) estRTT) + alpha * (double) sampleRTT);
+						devRTT = (long) ((1.0 - beta) * ((double) devRTT) + beta * (double) Math.abs(sampleRTT - estRTT));
+						DATATimeout = estRTT + 4 * devRTT;
+					}
+
 					close(); // call close again
 					return;
 				}
@@ -626,14 +710,15 @@ public class TCPSock {
 			else {
 
 				// the seq expect
-				if (seq == startSeq && availableWindowSize() >= packetPayload.length) {
+				if (seq == baseSeq && availableWindowSize() >= packetPayload.length) {
 					System.out.print("."); // receive an expected packet
 					System.out.flush();
-					startSeq += packetPayload.length;
-					nextSeq = startSeq;
+					baseSeq += packetPayload.length;
+					debug("receive:" + seq);
 
 					// send ACK (no need to time out at the server side)
-					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), startSeq, new byte[0]);
+					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize() - packetPayload.length,
+							baseSeq, new byte[0]);
 					byte connAckByte[] = connAckPacket.pack();
 					Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
 							node.currentPacketSeq++, connAckByte);
@@ -645,7 +730,6 @@ public class TCPSock {
 						node.logError("Exception: " + e);
 					}
 
-					// note that payload is stored before availableWindowSize is sent in ACK
 					// save payload at the socket window
 					writeToWindow(packetPayload);
 
@@ -657,7 +741,8 @@ public class TCPSock {
 					System.out.flush();
 
 					// send old ACK (no need to time out at the server side)
-					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(), startSeq, new byte[0]);
+					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(),
+							baseSeq, new byte[0]);
 					byte connAckByte[] = connAckPacket.pack();
 					Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
 							node.currentPacketSeq++, connAckByte);
@@ -701,13 +786,63 @@ public class TCPSock {
 
 	// available window size
 	private int availableWindowSize() {
-		return (int)((long)window.length - (writePointer - readPointer));
+		return (int) ((long) readWindow.length - (writePointer - readPointer));
 	}
 
 	// write to window (must be called after checking availableWindowSize)
 	private void writeToWindow(byte payload[]) {
-		for(int i = 0; i < payload.length; i++) {
-			window[(int)((writePointer++) % (long)window.length)] = payload[i];
+		for (int i = 0; i < payload.length; i++) {
+			readWindow[(int) ((writePointer++) % (long) readWindow.length)] = payload[i];
 		}
+	}
+
+	// available write window size
+	private int availableWWindowSize() {
+		return (int) ((long) writeWindow.length - (writeWPointer - readSafeWPointer));
+	}
+
+	// write to Wwindow (must be called after checking availableWWindowSize)
+	private void writeToWWindow(byte payload[], int pos, int size) {
+		for (int i = 0; i < size; i++) {
+			writeWindow[(int) ((writeWPointer++) % (long) writeWindow.length)] = payload[pos + i];
+		}
+	}
+
+	// write window content length
+	private int contentLengthWWindow() {
+		return (int) (writeWPointer - readWPointer);
+	}
+
+	// readFrom Wwindow for payload.length bytes (must be called after checking
+	// contentLengthWWindow to avoid payload.length to be too large)
+	private void readFromWWindow(byte payload[], long pointer) {
+		for (int i = 0; i < payload.length; i++) {
+			payload[i] = writeWindow[(int) ((pointer++) % (long) writeWindow.length)];
+		}
+	}
+
+	// For debug
+
+	public static final boolean _DEBUG = true;
+
+	// for debug purpose
+	public void printSeqNumbers() {
+
+		if(!_DEBUG) return;
+
+		System.out.print("{");
+		for(int i = 0; i < seqNumbers.size(); i++) {
+			System.out.print(seqNumbers.get(i));
+			if(i != seqNumbers.size() - 1) {
+				System.out.print(",");
+			}
+		}
+		System.out.println("}");
+		
+	}
+
+	public void debug(String s) {
+		if(_DEBUG)
+			System.out.println(s);
 	}
 }

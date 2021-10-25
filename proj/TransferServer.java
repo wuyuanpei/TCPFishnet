@@ -1,3 +1,5 @@
+import java.util.Arrays;
+
 /**
  * <p>Title: CPSC 433/533 Programming Assignment</p>
  *
@@ -101,6 +103,7 @@ public class TransferServer extends FishThread {
 
                 int len = buf.length - index;
                 int count = sock.read(buf, index, len);
+				System.out.println("read count=" + count);
 
                 if (count == -1) {
                     // on error, release the socket immediately
@@ -120,6 +123,8 @@ public class TransferServer extends FishThread {
                             // data corrupted
                             node.logError("time = " + manager.now() + " msec");
                             node.logError("data corruption detected");
+							System.out.println(Arrays.toString(buf));
+							System.out.println("i=" + i + " buf[i]="+buf[i]);
                             node.logError("position = " + pos);
                             node.logError("releasing connection...");
                             sock.release();

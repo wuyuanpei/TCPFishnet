@@ -4,7 +4,7 @@ This project implements a one-directional TCP protocol with flow control and con
 - Author: Richard Wu
 - Date: 2021 Oct 24
 
-## Part 1: the basic protocol with socket API
+## Part 1a: the basic protocol (stop-and-wait) with socket API
 
 ### Packet and Transport
 - ``class Packet`` is used to simulate packets in network layer, thus it contains IP header like ``dest`` address, ``src`` address, ``ttl``, etc.
@@ -46,10 +46,8 @@ alpha = 0.125;
 beta = 0.25;
 EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT
 DevRTT = (1 - beta) * DevRTT + beta * |SampleRTT - EstRTT|
-Timeout = 1.1 * (EstRTT + 4 * DevRTT); 
-// The constant 1.1 here is used to avoid premature timeout in FishNet
 ```
-- Note that for Part 1 "stop and wait", we do not buffer the content given by the argument of ``write()``. If the ``write`` cannot happen (due to any in-flight packet), ``write`` simply returns 0. Later in part 2, we implement more sophisticated buffer that buffers write.
+- Note that for Part 1 "stop and wait", we do not buffer the content given by the argument of ``write()``. If the ``write`` cannot happen (due to any in-flight packet), ``write`` simply returns 0. Later explained in part 1b, we implement more sophisticated buffer that buffers write to implement Go-Back-N.
 - ``read()``: this function will simply read from ``window`` and update ``readPointer``.
 - ``onReceive()``: this function is the most complicated one that handles incoming packet. 
 

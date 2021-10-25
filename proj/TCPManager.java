@@ -129,6 +129,9 @@ public class TCPManager {
 			System.out.print("X");
 			System.out.flush();
 
+			// avoid FIN looping
+			if(tcpPacket.getType() == Transport.FIN) return;
+
 			// send FIN, indicating connection refused
 			Transport connRefusePacket = new Transport(destPort, srcPort, Transport.FIN, 0, 0, new byte[0]);
 			byte connRefuseByte[] = connRefusePacket.pack();
