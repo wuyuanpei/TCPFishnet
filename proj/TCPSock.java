@@ -97,7 +97,76 @@ public class TCPSock {
 
 	private double cwnd = 1.0;
 
+	private double ssthresh = 64 * 1024;
+
 	private int cwndCurrent = 0; // the current number of packets sent that has not been ACKed
+
+	private int windowAvail = BUFFER_SIZE * Transport.MAX_PAYLOAD_SIZE; // ACK will set this field to indicate available space in the client
+
+	// parameters for cubic
+	private boolean tcp_friendliness = true;
+	private double cubic_beta = 0.2;
+	private boolean fast_convergence = true;
+	private double cubic_C = 0.4;
+	private double W_lastmax = 0;
+	private double epoch_start = 0;
+	private double origin_point = 0;
+	private double dMin = 0;
+	private double W_tcp = 0;
+	private double cubic_K = 0;
+	private double ack_cnt = 0;
+	private double cwnd_cnt = 1;
+
+	// cubic functions
+	private void cubic_reset() {
+		W_lastmax = 0;
+		epoch_start = 0;
+		origin_point = 0;
+		dMin = 0;
+		W_tcp = 0;
+		cubic_K = 0;
+		ack_cnt = 0;
+	}
+
+	private double cubic_update(){
+
+		double cnt = 0;
+
+		ack_cnt += 1;
+		if(epoch_start <= 0) {
+			epoch_start = manager.now();
+			if(cwnd <= W_lastmax) {
+				cubic_K = Math.cbrt((W_lastmax - cwnd) / cubic_C);
+				origin_point = W_lastmax;
+			} else {
+				cubic_K = 0;
+				origin_point = cwnd;
+			}
+			ack_cnt = 1;
+			W_tcp = cwnd;
+		}
+		double t = manager.now() + dMin - epoch_start;
+		double target = origin_point + cubic_C * Math.pow(t - cubic_K, 3);
+		if(target > cwnd) {
+			cnt = cwnd / (target - cwnd);
+		} else {
+			cnt = 100 * cwnd;
+		}
+		if(tcp_friendliness) {
+			return cubic_tcp_friendliness(cnt);
+		}
+		return cnt;
+	}
+
+	private double cubic_tcp_friendliness(double cnt) {
+		W_tcp = W_tcp + ((3 * cubic_beta) / (2 - cubic_beta)) * ack_cnt / cwnd;
+		ack_cnt = 0;
+		if(W_tcp > cwnd) {
+			double max_cnt = cwnd / (W_tcp - cwnd);
+			if(cnt > max_cnt) return max_cnt;
+		}
+		return cnt;
+	}
 
 	public TCPSock(TCPManager tcpMan, Node node, Manager manager, int localAddr) {
 		this.tcpMan = tcpMan;
@@ -364,11 +433,15 @@ public class TCPSock {
 
 		int seqFirst = -1;
 
-		while (cwndCurrent < cwnd) {
+		int byteSent = 0; // note that tryToSend will send one more packet to avoid deadlock
+
+		while (cwndCurrent < cwnd && byteSent <= windowAvail) {
 
 			int sendPktLen = Math.min(Transport.MAX_PAYLOAD_SIZE, contentLengthWWindow());
 
 			if(sendPktLen == 0) break; // nothing to send
+
+			byteSent += sendPktLen;
 
 			if(sendSomething == false) {
 				sendSomething = true;
@@ -405,22 +478,22 @@ public class TCPSock {
 		debug("DATATimeout:" + DATATimeout);
 		// At least one packet is sent
 		if(sendSomething)
-			this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
-				new Object[] {Integer.valueOf(seqFirst), Boolean.TRUE, Long.valueOf(manager.now())});
+			this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
+				new Object[] {Integer.valueOf(seqFirst), Integer.valueOf(sendSeq), Boolean.TRUE, Long.valueOf(manager.now())});
 	}
 
 
 	long lastFireResend = -1;
 
 	// resend all packets that has not been ACKed
-	public void resendData(Integer lastSendSeqI, Boolean isTimeout, Long timeSet) {
+	public void resendData(Integer lastSendSeqI, Integer finalSendSeqI, Boolean isTimeout, Long timeSet) {
 
 		// not the correct state
 		if (state != State.ESTABLISHED && state != State.SHUTDOWN)
 			return;
 
 		// has been ACKed
-		if (!seqNumbers.contains(lastSendSeqI))
+		if (!seqNumbers.contains(lastSendSeqI) && !seqNumbers.contains(finalSendSeqI))
 			return;
 
 		// used to avoid resent problem
@@ -430,7 +503,21 @@ public class TCPSock {
 
 		lastFireResend = manager.now();
 
-		cwnd /= 2.0;
+		//cwnd /= 2.0;
+		// for cubic
+		epoch_start = 0;
+		if(cwnd < W_lastmax && fast_convergence) {
+			W_lastmax = cwnd * (2.0 - cubic_beta) / 2.0;
+		} else {
+			W_lastmax = cwnd;
+		}
+		cwnd = cwnd * (1.0 - cubic_beta);
+		ssthresh = cwnd;
+
+		if(isTimeout) 
+			cubic_reset();
+
+		//System.out.println(cwnd);
 
 		/*if(isTimeout)
 			System.out.println(cwnd);
@@ -472,8 +559,8 @@ public class TCPSock {
 		// timeout and resend data
 		debug("DATAResendTimeout:" + DATATimeout);
 	
-		this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
-			new Object[] {lastSendSeqI, isTimeout, Long.valueOf(manager.now())});
+		this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
+			new Object[] {lastSendSeqI, Integer.valueOf(resendSeq), isTimeout, Long.valueOf(manager.now())});
 
 	} 
 
@@ -537,6 +624,7 @@ public class TCPSock {
 
 		int type = tcpPacket.getType();
 		int seq = tcpPacket.getSeqNum();
+		int windowClient = tcpPacket.getWindow();
 		byte packetPayload[] = tcpPacket.getPayload();
 
 		// for SYN packet
@@ -646,9 +734,11 @@ public class TCPSock {
 					System.out.print(":");
 					System.out.flush();
 					
+					
 					// AI
-					cwnd += 1.0/cwnd;
+					//cwnd += 1.0/cwnd;
 					//System.out.println(cwnd);
+					
 
 					cwndCurrent--;
 
@@ -667,7 +757,29 @@ public class TCPSock {
 						devRTT = (long) ((1.0 - beta) * ((double) devRTT) + beta * (double) Math.abs(sampleRTT - estRTT));
 						DATATimeout = estRTT + 4 * devRTT;
 					}
+					
+					// for cubic
+					if(dMin != 0) {
+						dMin = Math.min(dMin, estRTT);
+					} else {
+						dMin = estRTT;
+					}
 
+					if(cwnd <= ssthresh) {
+						cwnd += 1;
+					} else {
+						double cnt = cubic_update();
+						if(cwnd_cnt > cnt){
+							cwnd += 1;
+							cwnd_cnt = 0;
+						} else {
+							cwnd_cnt += 1;
+						}
+					}
+
+					//System.out.println(cwnd);
+					
+					this.windowAvail = windowClient;
 					tryToSend();
 
 					return;
@@ -678,7 +790,7 @@ public class TCPSock {
 					System.out.flush();
 					// do retransmission
 					if(doRetransmission && seqNumbers.size() > 0) {
-						resendData(seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
+						resendData(seqNumbers.get(0), seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
 					}
 					return;
 				}
@@ -696,7 +808,7 @@ public class TCPSock {
 					System.out.flush();
 
 					// AI
-					cwnd += 1.0/cwnd;
+					//cwnd += 1.0/cwnd;
 					//System.out.println(cwnd);
 
 					cwndCurrent--;
@@ -717,8 +829,30 @@ public class TCPSock {
 						DATATimeout = estRTT + 4 * devRTT;
 					}
 
-					tryToSend();
+					// for cubic
+					if(dMin != 0) {
+						dMin = Math.min(dMin, estRTT);
+					} else {
+						dMin = estRTT;
+					}
 
+					if(cwnd <= ssthresh) {
+						cwnd += 1;
+					} else {
+						double cnt = cubic_update();
+						if(cwnd_cnt > cnt){
+							cwnd += 1;
+							cwnd_cnt = 0;
+						} else {
+							cwnd_cnt += 1;
+						}
+					}
+
+					//System.out.println(cwnd);
+
+					this.windowAvail = windowClient;
+					tryToSend();
+					
 					close(); // call close again
 					
 					return;
@@ -727,6 +861,12 @@ public class TCPSock {
 				else {
 					System.out.print("?");
 					System.out.flush();
+
+					// do retransmission
+					if(doRetransmission && seqNumbers.size() > 0) {
+						resendData(seqNumbers.get(0), seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
+					}
+
 					return;
 				}
 			}
@@ -734,10 +874,6 @@ public class TCPSock {
 			else {
 				System.out.print("X");
 				System.out.flush();
-				// do retransmission
-				if(doRetransmission && seqNumbers.size() > 0) {
-					resendData(seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
-				}
 				return;
 			}
 		}

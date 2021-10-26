@@ -1190,3 +1190,7 @@ Node 1: Bps = 3060.912151821243
 :10.070885099220742
 :10.170181237558909
 ```
+
+### Cubic trace
+- Cubic is applied
+- On default setting with 10KB/s bandwidth and 250 ms buffering capacity
