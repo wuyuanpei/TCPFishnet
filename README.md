@@ -83,6 +83,23 @@ DevRTT = (1 - beta) * DevRTT + beta * |SampleRTT - EstRTT|
 - AIMD is simple: when an expected ACK is received, ``cwnd += 1/cwnd``; when ``resendData`` is called, ``cwnd /= 2``. Please check the testing below for AIMD performance.
 - Cubic is implemented too. Please check out ``cubic_reset()``, ``cubic_update()``, ``cubic_tcp_friendliness()``. The algorithm replaces ``cwnd += 1/cwnd`` in ``onReceive`` for ACK and ``cwnd /= 2`` in ``resendData``.
 
+## Discussion Questions
+- Diss1a: Your transport protocol implementation picks an initial sequence number when establishing a new connection. This might be 1, or it could be a random value. Which is better, and why?
+
+A random value is better, because then a malicious attacker cannot fake an ACK packet with the sequence number that the sender expects. A random sequence number can let the sender make sure that the receiver receives the SYN packet is ready to accept data.
+
+- Diss1b: Our connection setup protocol is vulnerable to the following attack. The attacker sends a large number of connection request (SYN) packets to a particular node, but never sends any data. (This is called a SYN flood.) What happens to your implementation if it were attacked in this way? How might you have designed the initial handshake protocol (or the protocol implementation) differently to be more robust to this attack?
+
+In my implementation, a connection socket (not welcome socket) will time out if ``onReceive`` has not been called for a fixed amount of time (e.g., 60 seconds), and then it will release automatically. Also, the welcome socket can only take ``backlog`` number of connections before any of them has been ``accepted``, so the memory will not be overwhelmed. We can design the initial handshake protocol to defend this attack: in the ACK returned from SYN (indicated by the receiver) or in the SYN itself (indicated by the sender), we can have a new timeout field. If the sender does not send anything under the time constraint, both sides can assume that the socket can be closed.
+
+- Diss1c: What happens in your implementation when a sender transfers data but never closes a connection? (This is called a FIN attack.) How might we design the protocol differently to better handle this case?
+
+Again, in my implementation, a connection socket (not welcome socket) will time out if ``onReceive`` has not been called for a fixed amount of time (e.g., 60 seconds), and then it will release automatically. A timeout field in every DATA packet will work. The timeout field will indicate how long the next packet will come. If the timer expires, both side can assume that the socket can be closed, as if FIN is sent.
+
+- Diss2: Your transport protocol implementation picks the size of a buffer for received data that is used as part of flow control. How large should this buffer be, and why?
+
+This buffer will hold data for ``read()``. It will be written by DATA from ``onReceive`` and read by ``read()``. Ideally, if the application layer can read the buffer infinitely fast, then as long as the buffer can hold one packet, we should be fine. However, if we receive a batch of packets (e.g., ``cwnd`` number of packets) and the application reading speed is not fast enough compared to the receiving rate of packets in the same batch, then read buffer size must be at least ``cwnd`` times packet size to avoid discarding data. Currently, assume the receiver and send has the same speed (of calling ``write()`` and ``read()``), we set both read buffer and write buffer size to be the same constant times packet size. The ``cwnd`` in the testing environment can reach roughly 32, so we set the constant to be 32 too.
+
 ## Testing
 - I first implement "stop-and-wait", i.e., the ``cwnd`` is fixed at 1.
 - Then I implement "Go-Back-N" without fast retransmission (3 duplicated ACKs), flow control, and congestion control.
