@@ -44,7 +44,7 @@ public class TCPSock {
 	private long devRTT = -1;
 	private final double alpha = 0.125;
 	private final double beta = 0.25;
-	// store the sample RTTs, key is the ACK seq (i.e., nextSeq), value is the data
+	// store the sample RTTs, key is the ACK seq, value is the data
 	// sent time
 	private HashMap<Integer, Long> sampleRTTs;
 
