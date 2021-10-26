@@ -3,6 +3,11 @@ This project implements a one-directional TCP protocol with flow control and con
 
 - Author: Richard Wu
 - Date: 2021 Oct 24
+- GitHub repo: https://github.com/wuyuanpei/TCPFishnet
+
++ The first section of the report discusses the implementation details
++ The second section answers the discussion questions
++ The last section shows all the experiments and traces
 
 ## Implementing the protocol (Go-Back-N with AIMD/Cubic) and socket API
 
