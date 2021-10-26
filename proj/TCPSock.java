@@ -306,8 +306,7 @@ public class TCPSock {
 				connRequestByte);
 		try {
 			manager.sendPkt(localAddr, destAddr, packet.pack());
-			System.out.print("S");
-			System.out.flush();
+			out("S");
 		} catch (IllegalArgumentException e) {
 			node.logError("Exception: " + e);
 		}
@@ -333,8 +332,7 @@ public class TCPSock {
 				node.currentPacketSeq++, connRequestByte);
 		try {
 			manager.sendPkt(localAddr, remoteAddr, packet.pack());
-			System.out.print("S");
-			System.out.flush();
+			out("S");
 		} catch (IllegalArgumentException e) {
 			node.logError("Exception: " + e);
 		}
@@ -367,7 +365,7 @@ public class TCPSock {
 					node.currentPacketSeq++, connRefuseByte);
 			try {
 				manager.sendPkt(localAddr, remoteAddr, finPacket.pack());
-				System.out.print("F");
+				out("F");
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
@@ -465,8 +463,7 @@ public class TCPSock {
 				seqNumbers.add(sendSeq);
 				cwndCurrent++;
 				sampleRTTs.put(sendSeq, manager.now());
-				System.out.print(".");
-				System.out.flush();
+				out(".");
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
@@ -517,7 +514,7 @@ public class TCPSock {
 		if(isTimeout) 
 			cubic_reset();
 
-		System.out.println(cwnd);
+		outW("" + cwnd);
 
 		/*if(isTimeout)
 			System.out.println(cwnd);
@@ -550,8 +547,7 @@ public class TCPSock {
 			try {
 				manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
 				resendSeq += sendPktLen;
-				System.out.print("!");
-				System.out.flush();
+				out("!");
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
@@ -630,8 +626,7 @@ public class TCPSock {
 		// for SYN packet
 		if (type == Transport.SYN) {
 
-			System.out.print("S");
-			System.out.flush();
+			out("S");
 
 			// if the current socket is not listening or established
 			// (An established socket can receive SYN if the first SYN times out
@@ -646,8 +641,7 @@ public class TCPSock {
 						node.currentPacketSeq++, connRefuseByte);
 				try {
 					manager.sendPkt(destAddr, srcAddr, finPacket.pack());
-					System.out.print("F");
-					System.out.flush();
+					out("F");
 				} catch (IllegalArgumentException e) {
 					node.logError("Exception: " + e);
 				}
@@ -665,8 +659,7 @@ public class TCPSock {
 					node.currentPacketSeq++, connAckByte);
 			try {
 				manager.sendPkt(destAddr, srcAddr, ackPacket.pack());
-				System.out.print(":"); // ACK for SYN
-				System.out.flush();
+				out(":"); // ACK for SYN
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
@@ -711,28 +704,35 @@ public class TCPSock {
 					baseSeq += 1;
 					sendSeq = baseSeq;
 					state = State.ESTABLISHED;
-					System.out.print(":"); // ACK for SYN
-					System.out.flush();
+					out(":"); // ACK for SYN
 					return;
 				} else {
 					// dangerous! somebody is faking a ACK
-					System.out.print("X");
-					System.out.flush();
+					out("X");
 					return;
 				}
 			}
 			// ACK for Data
 			else if (state == State.ESTABLISHED) {
 				// The ACK expected
-				if (seqNumbers.size() > 0 && seq == seqNumbers.get(0)) {
-					seqNumbers.remove(0);
+				if (seqNumbers.size() > 0 && seqNumbers.contains(seq)) {
+
+					int numberOfSeqsToClear = seqNumbers.indexOf(seq) + 1;
+
+					// remove lost ACKs
+					for(int i = 0; i < numberOfSeqsToClear; i++) {
+						int lostACKs = seqNumbers.remove(0);
+						if(i != numberOfSeqsToClear - 1) {
+							sampleRTTs.remove(lostACKs);
+						}
+					}
+
 					debug("receive ACK:"+seq);
 					printSeqNumbers();
 					readSafeWPointer += seq - baseSeq; // increment by the length of the packet
 					baseSeq = seq;
 					
-					System.out.print(":");
-					System.out.flush();
+					out(":");
 					
 					
 					// AI
@@ -740,7 +740,7 @@ public class TCPSock {
 					//System.out.println(cwnd);
 					
 
-					cwndCurrent--;
+					cwndCurrent -= numberOfSeqsToClear;
 
 					// update estRTT and devRTT and DATATimeout
 					long sentTime = sampleRTTs.remove(seq).longValue();
@@ -777,7 +777,7 @@ public class TCPSock {
 						}
 					}
 
-					System.out.println(cwnd);
+					outW(""+cwnd);
 					
 					this.windowAvail = windowClient;
 					tryToSend();
@@ -786,8 +786,7 @@ public class TCPSock {
 				}
 				// Not the expected ACK
 				else {
-					System.out.print("?");
-					System.out.flush();
+					out("?");
 					// do retransmission
 					if(doRetransmission && seqNumbers.size() > 0) {
 						resendData(seqNumbers.get(0), seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
@@ -798,20 +797,30 @@ public class TCPSock {
 			// ACK for SHUTDOWN
 			else if (state == State.SHUTDOWN) {
 				// The ACK expected
-				if (seqNumbers.size() > 0 && seq == seqNumbers.get(0)) {
-					seqNumbers.remove(0);
+				if (seqNumbers.size() > 0 && seqNumbers.contains(seq)) {
+
+					int numberOfSeqsToClear = seqNumbers.indexOf(seq) + 1;
+
+					// remove lost ACKs
+					for(int i = 0; i < numberOfSeqsToClear; i++) {
+						int lostACKs = seqNumbers.remove(0);
+						if(i != numberOfSeqsToClear - 1) {
+							sampleRTTs.remove(lostACKs);
+						}
+					}
+
 					debug("receive ACK:"+seq);
 					printSeqNumbers();
 					readSafeWPointer += seq - baseSeq; // increment by the length of the packet
 					baseSeq = seq;
-					System.out.print(":");
-					System.out.flush();
+
+					out(":");
 
 					// AI
 					//cwnd += 1.0/cwnd;
 					//System.out.println(cwnd);
 
-					cwndCurrent--;
+					cwndCurrent -= numberOfSeqsToClear;
 
 					// update estRTT and devRTT and DATATimeout
 					long sentTime = sampleRTTs.remove(seq).longValue();
@@ -848,7 +857,7 @@ public class TCPSock {
 						}
 					}
 
-					System.out.println(cwnd);
+					outW("" + cwnd);
 
 					this.windowAvail = windowClient;
 					tryToSend();
@@ -859,8 +868,7 @@ public class TCPSock {
 				}
 				// Not the expected ACK
 				else {
-					System.out.print("?");
-					System.out.flush();
+					out("?");
 
 					// do retransmission
 					if(doRetransmission && seqNumbers.size() > 0) {
@@ -872,8 +880,7 @@ public class TCPSock {
 			}
 			// ACK for other states
 			else {
-				System.out.print("X");
-				System.out.flush();
+				out("X");
 				return;
 			}
 		}
@@ -896,8 +903,7 @@ public class TCPSock {
 				}
 
 				// no socket, send fin
-				System.out.print("X"); // receive an unexpected packet
-				System.out.flush();
+				out("X"); // receive an unexpected packet
 
 				// Send FIN
 				Transport connRefusePacket = new Transport(destPort, srcPort, Transport.FIN, 0, 0, new byte[0]);
@@ -906,8 +912,7 @@ public class TCPSock {
 						node.currentPacketSeq++, connRefuseByte);
 				try {
 					manager.sendPkt(destAddr, srcAddr, finPacket.pack());
-					System.out.print("F");
-					System.out.flush();
+					out("F");
 				} catch (IllegalArgumentException e) {
 					node.logError("Exception: " + e);
 				}
@@ -920,8 +925,7 @@ public class TCPSock {
 
 				// the seq expect
 				if (seq == baseSeq && availableWindowSize() >= packetPayload.length) {
-					System.out.print("."); // receive an expected packet
-					System.out.flush();
+					out("."); // receive an expected packet
 					baseSeq += packetPayload.length;
 					debug("receive:" + seq);
 
@@ -933,8 +937,7 @@ public class TCPSock {
 							node.currentPacketSeq++, connAckByte);
 					try {
 						manager.sendPkt(destAddr, srcAddr, ackPacket.pack());
-						System.out.print(":");
-						System.out.flush();
+						out(":");
 					} catch (IllegalArgumentException e) {
 						node.logError("Exception: " + e);
 					}
@@ -946,8 +949,7 @@ public class TCPSock {
 				}
 				// out of order packet or window is full
 				else {
-					System.out.print("!"); // receive an unexpected packet
-					System.out.flush();
+					out("!"); // receive an unexpected packet
 
 					// send old ACK (no need to time out at the server side)
 					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize(),
@@ -957,8 +959,7 @@ public class TCPSock {
 							node.currentPacketSeq++, connAckByte);
 					try {
 						manager.sendPkt(destAddr, srcAddr, ackPacket.pack());
-						System.out.print("?");
-						System.out.flush();
+						out("?");
 					} catch (IllegalArgumentException e) {
 						node.logError("Exception: " + e);
 					}
@@ -970,7 +971,7 @@ public class TCPSock {
 		// For FIN packet
 		else if (type == Transport.FIN) {
 			// simply release itself
-			System.out.print("F");
+			out("F");
 			if(readPointer != writePointer) { // still need to be read
 				state = State.SHUTDOWN;
 			} else {
@@ -1034,11 +1035,14 @@ public class TCPSock {
 		}
 	}
 
-	// For debug
-
+	/* for debug and print purpose */
 	public static final boolean _DEBUG = false;
 
-	// for debug purpose
+	public static final boolean _OUT = true;
+
+	public static final boolean _TRACK_CWND = false;
+
+	
 	public void printSeqNumbers() {
 
 		if(!_DEBUG) return;
@@ -1058,5 +1062,18 @@ public class TCPSock {
 		if(_DEBUG)
 			System.out.println(s);
 	}
+
+	public static void out(String s) {
+		if(_OUT) {
+			System.out.print(s);
+			System.out.flush();
+		}
+	}
+
+	public static void outW(String s) {
+		if(_TRACK_CWND)
+			System.out.println(s);
+	}
+
 
 }

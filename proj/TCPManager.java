@@ -126,8 +126,7 @@ public class TCPManager {
 		if (bestSock == null) {
 
 			// receive an unexpected packet
-			System.out.print("X");
-			System.out.flush();
+			TCPSock.out("X");
 
 			// avoid FIN looping
 			if(tcpPacket.getType() == Transport.FIN) return;
@@ -139,8 +138,7 @@ public class TCPManager {
 					node.currentPacketSeq++, connRefuseByte);
 			try {
 				manager.sendPkt(destAddr, srcAddr, finPacket.pack());
-				System.out.print("F");
-				System.out.flush();
+				TCPSock.out("F");
 			} catch (IllegalArgumentException e) {
 				node.logError("Exception: " + e);
 			}
