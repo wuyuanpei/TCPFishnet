@@ -1,3 +1,3 @@
-edge 0 1 bw 2000 bt 150
+edge 0 1 bw 20000 bt 250
 edge 1 2 bw 2000 bt 150
 edge 0 2

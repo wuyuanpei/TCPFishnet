@@ -95,8 +95,9 @@ public class TCPSock {
 	private long writeWPointer; // always points to the first byte that write() is going to write
 	private long readSafeWPointer; // always points to the first byte that has not been ACKed yet
 
-	private int cwnd = 16;
-	private int ssthresh = 64 * 1024;
+	private double cwnd = 1.0;
+
+	private int cwndCurrent = 0; // the current number of packets sent that has not been ACKed
 
 	public TCPSock(TCPManager tcpMan, Node node, Manager manager, int localAddr) {
 		this.tcpMan = tcpMan;
@@ -361,13 +362,18 @@ public class TCPSock {
 
 		boolean sendSomething = false;
 
-		while (cwnd > 0) {
+		int seqFirst = -1;
+
+		while (cwndCurrent < cwnd) {
 
 			int sendPktLen = Math.min(Transport.MAX_PAYLOAD_SIZE, contentLengthWWindow());
 
 			if(sendPktLen == 0) break; // nothing to send
 
-			sendSomething = true;
+			if(sendSomething == false) {
+				sendSomething = true;
+				seqFirst = sendSeq + sendPktLen;
+			}
 
 			byte tcpPayload[] = new byte[sendPktLen];
 			
@@ -384,7 +390,7 @@ public class TCPSock {
 				manager.sendPkt(localAddr, remoteAddr, tcpPacket.pack());
 				sendSeq += sendPktLen;
 				seqNumbers.add(sendSeq);
-				cwnd--;
+				cwndCurrent++;
 				sampleRTTs.put(sendSeq, manager.now());
 				System.out.print(".");
 				System.out.flush();
@@ -399,12 +405,15 @@ public class TCPSock {
 		debug("DATATimeout:" + DATATimeout);
 		// At least one packet is sent
 		if(sendSomething)
-			this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer"}, new Object[] {Integer.valueOf(sendSeq)});
+			this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
+				new Object[] {Integer.valueOf(seqFirst), Boolean.TRUE, Long.valueOf(manager.now())});
 	}
 
-	
+
+	long lastFireResend = -1;
+
 	// resend all packets that has not been ACKed
-	public void resendData(Integer lastSendSeqI) {
+	public void resendData(Integer lastSendSeqI, Boolean isTimeout, Long timeSet) {
 
 		// not the correct state
 		if (state != State.ESTABLISHED && state != State.SHUTDOWN)
@@ -413,6 +422,20 @@ public class TCPSock {
 		// has been ACKed
 		if (!seqNumbers.contains(lastSendSeqI))
 			return;
+
+		// used to avoid resent problem
+		if(timeSet < lastFireResend){
+			return;
+		}
+
+		lastFireResend = manager.now();
+
+		cwnd /= 2.0;
+
+		/*if(isTimeout)
+			System.out.println(cwnd);
+		else
+			System.out.println(cwnd);*/
 
 		int resendSeq = baseSeq;
 
@@ -448,7 +471,9 @@ public class TCPSock {
 		}
 		// timeout and resend data
 		debug("DATAResendTimeout:" + DATATimeout);
-		this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer"}, new Object[] {lastSendSeqI});
+	
+		this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
+			new Object[] {lastSendSeqI, isTimeout, Long.valueOf(manager.now())});
 
 	} 
 
@@ -488,6 +513,12 @@ public class TCPSock {
 			release();
 		}
 	}
+
+	// For fast retransmission
+	// Detect triple duplicate Ack
+	int lastAck = -1;
+
+	int ackTimes;
 
 	public void onReceive(Packet packet) {
 
@@ -572,6 +603,20 @@ public class TCPSock {
 		// for ACK packet
 		else if (type == Transport.ACK) {
 
+			// record seq for triple duplicate ACK
+			if(lastAck == seq) {
+				ackTimes++;
+			} else {
+				lastAck = seq;
+				ackTimes = 1;
+			}
+
+			boolean doRetransmission = false;
+			// The fourth time
+			if(ackTimes == 4) {
+				doRetransmission = true;
+			} 
+
 			// ACK for SYN
 			if (state == State.SYN_SENT) {
 				if (seq == baseSeq + 1) {
@@ -597,15 +642,20 @@ public class TCPSock {
 					printSeqNumbers();
 					readSafeWPointer += seq - baseSeq; // increment by the length of the packet
 					baseSeq = seq;
+					
 					System.out.print(":");
 					System.out.flush();
+					
+					// AI
+					cwnd += 1.0/cwnd;
+					//System.out.println(cwnd);
 
-					cwnd++;
+					cwndCurrent--;
 
 					// update estRTT and devRTT and DATATimeout
 					long sentTime = sampleRTTs.remove(seq).longValue();
 					long sampleRTT = manager.now() - sentTime;
-
+					debug("sampleRTT:" + sampleRTT);
 					// for the first measure
 					if (estRTT == -1) {
 						estRTT = sampleRTT;
@@ -626,6 +676,10 @@ public class TCPSock {
 				else {
 					System.out.print("?");
 					System.out.flush();
+					// do retransmission
+					if(doRetransmission && seqNumbers.size() > 0) {
+						resendData(seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
+					}
 					return;
 				}
 			}
@@ -640,6 +694,12 @@ public class TCPSock {
 					baseSeq = seq;
 					System.out.print(":");
 					System.out.flush();
+
+					// AI
+					cwnd += 1.0/cwnd;
+					//System.out.println(cwnd);
+
+					cwndCurrent--;
 
 					// update estRTT and devRTT and DATATimeout
 					long sentTime = sampleRTTs.remove(seq).longValue();
@@ -657,7 +717,10 @@ public class TCPSock {
 						DATATimeout = estRTT + 4 * devRTT;
 					}
 
+					tryToSend();
+
 					close(); // call close again
+					
 					return;
 				}
 				// Not the expected ACK
@@ -671,6 +734,10 @@ public class TCPSock {
 			else {
 				System.out.print("X");
 				System.out.flush();
+				// do retransmission
+				if(doRetransmission && seqNumbers.size() > 0) {
+					resendData(seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
+				}
 				return;
 			}
 		}
@@ -851,8 +918,9 @@ public class TCPSock {
 		
 	}
 
-	public void debug(String s) {
+	public static void debug(String s) {
 		if(_DEBUG)
 			System.out.println(s);
 	}
+
 }
