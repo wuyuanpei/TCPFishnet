@@ -277,6 +277,7 @@ Note that in the emulation mode, we have ``S:`` at the beginning, ``F`` at the e
 - without any congestion/flow control
 - On default setting with 10KB/s bandwidth and 250 ms buffering capacity (i.e., basically no loss)
 - fix windows size 16
+
 Trawer:
 ```
 (base) Richards-MacBook-Pro:TCPFishnet wuyuanpei$ perl trawler.pl 8888 scripts/three.topo 
@@ -339,6 +340,7 @@ Node 1: Bps = 3060.912151821243
 - without any congestion/flow control
 - On default setting with 2KB/s bandwidth and 150 ms buffering capacity (i.e., with loss)
 - fix windows size 16
+
 Trawer:
 ```
 (base) Richards-MacBook-Pro:TCPFishnet wuyuanpei$ cat scripts/three.topo 
@@ -472,6 +474,7 @@ Node 1: Bps = 3108.7760748593278
 - Triple Duplicate ACK retransmission
 - AIMD is applied
 - On default setting with 20KB/s bandwidth and 250 ms buffering capacity (i.e., with loss)
+
 Trawer:
 ```
 (base) Richards-MacBook-Pro:TCPFishnet wuyuanpei$ cat scripts/three.topo 
