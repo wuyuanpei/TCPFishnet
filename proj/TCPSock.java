@@ -486,14 +486,14 @@ public class TCPSock {
 	long lastFireResend = -1;
 
 	// resend all packets that has not been ACKed
-	public void resendData(Integer lastSendSeqI, Integer finalSendSeqI, Boolean isTimeout, Long timeSet) {
+	public void resendData(Integer firstSendSeqI, Integer finalSendSeqI, Boolean isTimeout, Long timeSet) {
 
 		// not the correct state
 		if (state != State.ESTABLISHED && state != State.SHUTDOWN)
 			return;
 
 		// has been ACKed
-		if (!seqNumbers.contains(lastSendSeqI) && !seqNumbers.contains(finalSendSeqI))
+		if (!seqNumbers.contains(firstSendSeqI) && !seqNumbers.contains(finalSendSeqI))
 			return;
 
 		// used to avoid resent problem
@@ -517,7 +517,7 @@ public class TCPSock {
 		if(isTimeout) 
 			cubic_reset();
 
-		//System.out.println(cwnd);
+		System.out.println(cwnd);
 
 		/*if(isTimeout)
 			System.out.println(cwnd);
@@ -526,7 +526,7 @@ public class TCPSock {
 
 		int resendSeq = baseSeq;
 
-		debug("lastSendSeqI=" + lastSendSeqI.intValue() + " resendSeq=" +resendSeq);
+		debug("lastSendSeqI=" + firstSendSeqI.intValue() + " resendSeq=" +resendSeq);
 
 		printSeqNumbers();
 		
@@ -560,7 +560,7 @@ public class TCPSock {
 		debug("DATAResendTimeout:" + DATATimeout);
 	
 		this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
-			new Object[] {lastSendSeqI, Integer.valueOf(resendSeq), isTimeout, Long.valueOf(manager.now())});
+			new Object[] {firstSendSeqI, Integer.valueOf(resendSeq), isTimeout, Long.valueOf(manager.now())});
 
 	} 
 
@@ -777,7 +777,7 @@ public class TCPSock {
 						}
 					}
 
-					//System.out.println(cwnd);
+					System.out.println(cwnd);
 					
 					this.windowAvail = windowClient;
 					tryToSend();
@@ -848,7 +848,7 @@ public class TCPSock {
 						}
 					}
 
-					//System.out.println(cwnd);
+					System.out.println(cwnd);
 
 					this.windowAvail = windowClient;
 					tryToSend();
