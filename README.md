@@ -102,6 +102,8 @@ If the sender calls ``closed()``, then the sender connection socket will enter `
 If the receiver receives ``FIN``, then the receiver connection socket will enter ``SHUTDOWN`` and then if the read buffer is empty, it will enter ``CLOSED``.
 
 ## Discussion Questions
+### Part 2 discussions
+
 - Diss1a: Your transport protocol implementation picks an initial sequence number when establishing a new connection. This might be 1, or it could be a random value. Which is better, and why?
 
 A random value is better, because then a malicious attacker cannot fake an ACK packet with the sequence number that the sender expects. A random sequence number can let the sender make sure that the receiver receives the SYN packet is ready to accept data.
@@ -117,6 +119,44 @@ Again, in my implementation, a connection socket (not welcome socket) will time 
 - Diss2: Your transport protocol implementation picks the size of a buffer for received data that is used as part of flow control. How large should this buffer be, and why?
 
 This buffer will hold data for ``read()``. It will be written by DATA from ``onReceive`` and read by ``read()``. Ideally, if the application layer can read the buffer infinitely fast, then as long as the buffer can hold one packet, we should be fine. However, if we receive a batch of packets (e.g., ``cwnd`` number of packets) and the application reading speed is not fast enough compared to the receiving rate of packets in the same batch, then read buffer size must be at least ``cwnd`` times packet size to avoid discarding data. Currently, assume the receiver and send has the same speed (of calling ``write()`` and ``read()``), we set both read buffer and write buffer size to be the same constant times packet size. The ``cwnd`` in the testing environment can reach roughly 32, so we set the constant to be 32 too.
+
+### Part 3 discussions
+- 3.4 Delivery Flexibilities: Some major networks (e.g., Amazon Scalable Reliable Datagram) propose that the network does not enforce in-order delivery. Please describe how you may design a flexible API and protocol so that the transport can provide flexibilities such as delivery order (segments can be delivered to applications not in order) and reliability semantics/flexibilities (e.g., some packets do not need reliability, and one can use FEC to correct errors instead of using retransmissions).
+
+For the flexibility on delivery order: the ``write()`` function will have a special argument for the application layer so that the application layer can mark the byte stream of a ``write`` as "delivery order flexible" (dof). The dof bytes will be put into a separate write buffer (named ``DOFwriteWindow``) rather than ``writeWindow``. The TCP header will have a separate bit to indicate dof or not dof (i.e., ``dof bit``). The bytes in ``DOFwriteWindow`` will be packed into TCP packets (with ``dof bit`` set) separate from the bytes in ``writeWindow`` (with ``dof bit`` not set). Also, whenever there is some ``write`` into ``DOFwriteWindow``, the current ``writeWPointer`` of ``writeWindow`` will be recorded, so that whenever it is possible to send packets (``cwndCurrent`` is less than ``cwnd``), all the bytes, no matter in ``writeWindow`` or ``DOFwriteWindow``, will be served in "first come first served" fashion. (If there is nothing in ``DOFwriteWindow``, send bytes in ``writeWindow``. Otherwise, if the ``readWPointer`` has not reached the recorded ``writeWPointer``, send from ``writeWindow``, otherwise, send from ``DOFWriteWindow``). The TCP packets with ``dof bit`` set uses **selective ACK** instead of cumulative ACK. The sender will send dof packets with a separate system of seq number (may start from a random number too). When a receiver receives a dof packet, it does not check seq number (though the packet has a seq number) and it puts the bytes into the ``readWindow`` directly. It then replies with ACK seq equal to the seq number of the incoming dof packet (i.e., SACK). The sender still has time out mechanism for retransmission to ensure reliability.
+
+For the flexibility on reliablity: similarly, the ``write()`` function will have a special argument for the application layer so that the application layer can mark the byte stream of a ``write`` as "reliability flexible" (rf). It also has an argument for the application layer to specify the ECC scheme (for example, Hamming code) or even no ECC scheme (errors are just acceptable). Again, the rf bytes will be put into a separate write buffer (named ``RFwriteWindow``) rather than ``writeWindow``. The TCP header will have a separate bit to indicate rf or not rf (i.e., ``rf bit``) and a byte to indicate ECC scheme. Whenever there is some ``write`` into ``RFFwriteWindow``, the current ``writeWPointer`` of ``writeWindow`` will be recorded, so that whenever it is possible to send packets (``cwndCurrent`` is less than ``cwnd``), all the bytes, no matter in ``writeWindow`` or ``RFwriteWindow``, will be served in "first come first served" fashion. When the sender sends rf bytes, it will use the ECC specified to encode the information (for example, ``111`` to encode ``1`` and ``000`` to encode ``0``, rather than ``1`` or ``0`` itself) and mark the ``rf bit`` and ``ECC byte`` of the TCP packet. The receiver of the packet will ACK this packet without checking the validity of its content. The receiver will decode the original content based on ECC (for example, ``100``, ``010``, ``001`` all mean ``0``, in spite of the fact that one bit get flipped).
+
+- 3.1 Multipath TCP API and protocol: Your current API is the basic socket API. In class, we discussed multi-path TCP. How may you extend your socket to allow multi-path API? Please (1) specify the issues of existing API to support multipath TCP, (2) list the new API, clearly marking modifications and/or additions to the API, (3) give an example of client and server programs using your multi-path TCP API, and (4) briefly describe how your implementation (protocol format, server, client) will be changed to support multipath TCP. For this design exercise, you can assume bi-directional transport.
+
+The problem of the existing API is that the application layer cannot bind its socket to multiple addresses. For example, if the machine has both a WiFi interface and a cellular network interface, the application cannot bind its MPTCP socket to both IP addresses to create two paths. Also, in the current design, each socket does not know whether it is a regular TCP connection or it is a subconnection inside a MPTCP connection, thus it does not know which congestion control algorithm to use and how to handle the bytes sent/received. The solution is that we need to create some additional functions/objects listed below to support MPTCP. First, when a socket is created by ``TCPMananger``, the application need to specify whether it is a regular TCP or MPTCP. If MPTCP, then a special MPTCP socket will be returned. The MPTCP socket contains an array of regular TCP sockets. The MPTCP socket will have a function ``addTCPSock()`` to create a new TCP socket (that corresponds to one IP address and port number pair) inside it with the specific address and port number told by the application. Also it has a function ``removeTCPSock()`` that closes a TCP socket (may or may not be used by a subflow) inside the MPTCP socket. Applications can call ``addTCPSock()`` and ``removeTCPSock()`` even if a MPTCP connection has been established. If they are called, then a signal will be sent to the peer to advertise new possible subconnections or close current subconnections. Applications can ``read()`` and ``write()`` into a MPTCP socket just as a regular TCP socket. For ``write()``, MPTCP socket will store the data in its own ``writeWindow`` and the TCP sockets inside it will read from the shared ``writeWindow`` and send data onto the its specific network wire (note that lock is needed to avoid race). For ``read()``, the TCP socket (each subflow) will forward the data to the shared ``readWindow`` from which the application can read. The flow control and congestion control are managed by each TCP socket (i.e., each subflow) individually. At the very beginning when a sender (client) that supports MPTCP tries to connect to a receiver (server) that also supports MPTCP, the MPTCP sender will pick one of its available TCP socket and connect to one of the remote TCP socket spcified in ``connect()``. The sender then should advertise all of its available IP addresses and ports that are going to be used in a special type of packets called ``ADV`` (after ``SYN``, ``ACK`` but before ``DATA``). Then the receiver (server) can create a corresponding number of TCP sockets inside a MPTCP socket using its available pool of TCP sockets, each of which will send an ACK packet to one of the TCP sockets advertised by the client to establish connection. During the connection, when either side calls ``addTCPSock()`` or ``removeTCPSock()``, the change will be advertised to the peer through ``ADV``: new subconnections will be created if possible, dead subconnections will be closed. At the very end, when ``closed()`` is called by the application for the MPTCP socket, the MPTCP socket will call the ``closed()`` function in each TCP socket to clear up each subconnection. Usages in client side and server side look like the following:
+
+For the client side:
+```java
+boolean isMPTCPSocket = true;
+MPTCPSock mptcpSock = this.tcpMan.socket(isMPTCPSocket);
+mptcpSock.addTCPSock(addr1, port1);
+mptcpSock.addTCPSock(addr2, port2);
+mptcpSock.addTCPSock(addr3, port3);
+mptcpSock.connect(destAddr, port); // one of (addr4, port4), (addr5, port5), (addr6, port6)
+mptcpSock.write(buf, index, len);
+mptcpSock.close();
+```
+
+For the server side:
+```java
+boolean isMPTCPSocket = true;
+MPTCPSock mptcpSock = this.tcpMan.socket(isMPTCPSocket);
+mptcpSock.addTCPSock(addr4, port4);
+mptcpSock.addTCPSock(addr5, port5);
+mptcpSock.addTCPSock(addr6, port6);
+mptcpSock.listen(backlog);
+while(true) {
+	MPTCPSock connSock = mptcpSock.accept();
+	connSock.read(buf, index, len);
+	connSock.close();
+}
+```
 
 ## Testing
 - I first implement "stop-and-wait", i.e., the ``cwnd`` is fixed at 1.
@@ -221,7 +261,7 @@ Number of packets sent: 1031
 Number of packets dropped: 0
 Number of packets lost: 0
 ```
-There are some retransmission at the beginning.
+There are some retransmission at the beginning. (We can see that the first retransmission happens after three pairs of ``??``, meaning that fast retransmission is working)
 
 ### Emulate
 - For "stop-and-wait":
@@ -348,6 +388,7 @@ Node 1: time elapsed = 13068 msec
 
 Node 1: Bps = 3060.912151821243
 ```
+We can see that now retransmission retransmits the packets in the entire window.
 
 #### Go-Back-N trace 2
 - without any congestion/flow control
@@ -415,6 +456,7 @@ Node 1: time elapsed = 13072 msec
 
 Node 1: Bps = 3059.9755201958383
 ```
+There are notably more retransmissions as we decrease bandwith and buffer size. Because the window size is fixed, the simple protocol cannot adjust its retransmission rate to avoid congestion.
 
 #### Fast retransmission trace
 - Triple Duplicate Ack
@@ -549,6 +591,8 @@ Node 1: time elapsed = 26136 msec
 
 Node 1: Bps = 3060.912151821243
 ```
+- If you compare this trace to the ``Go-Back-N trace 2``, you can see that there are far less retransmissions as we introduce congestion control. The sender will slow down as packet loss/time out happens periodically.
+
 - To verify correctness, the output below shows ``cwnd`` after each ACK is received or timeout/triple ACKs happen
 ```
 .:2.0
@@ -1943,7 +1987,7 @@ Node 1: time elapsed = 32130 msec
 
 Node 1: Bps = 1556.178026766262
 ```
-
+- If you campare this trace with the last cubic trace on the default setting, you can see far more retransmissions.
 - To verify correctness, we print out the window size after each change (symbols like ``.`` and ``:`` are not printed out):
 ```
 2.0
