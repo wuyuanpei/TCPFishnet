@@ -6,7 +6,8 @@ This project implements a one-directional TCP protocol with flow control and con
 - GitHub repo: https://github.com/wuyuanpei/TCPFishnet
 
 + The first section of the report discusses the implementation details
-+ The second section answers the discussion questions
++ The second section describes the finite state machine of the protocol
++ The third section answers the discussion questions
 + The last section shows all the experiments and traces
 
 ## Implementing the protocol (Go-Back-N with AIMD/Cubic) and socket API
@@ -87,6 +88,18 @@ DevRTT = (1 - beta) * DevRTT + beta * |SampleRTT - EstRTT|
 - We implement two congestion control algorithms: AIMD and Cubic. (The slow start for AIMD is not implemented)
 - AIMD is simple: when an expected ACK is received, ``cwnd += 1/cwnd``; when ``resendData`` is called, ``cwnd /= 2``. Please check the testing below for AIMD performance.
 - Cubic is implemented too. Please check out ``cubic_reset()``, ``cubic_update()``, ``cubic_tcp_friendliness()``. The algorithm replaces ``cwnd += 1/cwnd`` in ``onReceive`` for ACK and ``cwnd /= 2`` in ``resendData``.
+
+## Finite State Machine
+
+![FSM.png](./FSM.png)
+
+The FSM of the protocol is shown in the figure above. Initially, the state of ``TCPSock`` is ``CLOSED``. When ``listen()`` is called, it will enter ``LISTEN`` state (i.e., become a welcome socket). On the other hand, if ``connect()`` is called, it will send ``SYN`` and enter ``SYN_SENT`` state (i.e., become a sender connection socket). If ``SYN`` is received at ``LISTEN`` state, then the welcome socket will respond with ``ACK`` and create a receiver connection socket with ``ESTABLISHED`` state. If ``ACK`` is received at the ``SYN_SENT`` state of the sender connection socket, the socket will turn into ``ESTABLISHED`` too.
+
+In the ``ESTABLISHED`` state, the sender will transfer ``DATA`` and the receiver will receive ``DATA`` and respond with ``ACK``. If ``release()`` is called or timeout happens (for the case when ``FIN`` is not received), then the socket will go from ``ESTABLISHED`` to ``CLOSED`` directly. 
+
+If the sender calls ``closed()``, then the sender connection socket will enter ``SHUTDOWN``. Then if write buffer is empty (i.e., no pending or in-flight data), it will send ``FIN`` and enter ``CLOSED``.
+
+If the receiver receives ``FIN``, then the receiver connection socket will enter ``SHUTDOWN`` and then if the read buffer is empty, it will enter ``CLOSED``.
 
 ## Discussion Questions
 - Diss1a: Your transport protocol implementation picks an initial sequence number when establishing a new connection. This might be 1, or it could be a random value. Which is better, and why?
