@@ -28,6 +28,7 @@ This project implements a one-directional TCP protocol with flow control and con
 - A ``TCPSock`` object has state ``CLOSED``, ``LISTEN``, ``SYN_SENT``, ``ESTABLISHED``, ``SHUTDOWN``.
 - ``SHUTDOWN`` state is used when ``close`` is requested, but ``FIN`` has not been sent (due to unsent data in write buffer); or ``FIN`` is received, but read buffer is not empty
 - A ``TCPSock`` object has fields ``localPort``, ``localAddr``, ``remotePort``, ``remoteAddr``
+- A ``TCPSock`` object can be set to use different congestion control algorithm ``CCALGO``: ``RENO``, ``CUBIC``, ``NONE``
 - A ``TCPSock`` object has fields ``estRTT``, ``devRTT``, ``alpha``, ``beta``, which are used to estimate RTT and calculate ``DATATimeout``. ``sampleRTTs`` is key-value pairs where key is the sequence number and value is the sent time.
 - **A ``TCPSock`` object has field ``baseSeq`` which is always the first sequence number that has not been ACKed yet**
 - **A ``TCPSock`` object has field ``sendSeq`` which is always the first sequence number that has just been sent (actually plus 1), meaning that ``tryToSend`` (which sends packet for the first time) should always use ``sendSeq`` as the seq number**
@@ -54,6 +55,7 @@ this.remoteAddr = -1;
 this.remotePort = -1;
 ```
 - ``bind()``: this function will check ``tcpMan.isUsed == false`` and set ``this.localPort`` and then put the socket into the global structure ``tcpMan.sockets``
+- ``setCcAlgorithm()``: this function will set the congestion control algorithm to use: ``RENO``, ``CUBIC``, or ``NONE``. This function should be called after ``bind()`` at the sender side. The default cc algorithm is ``RENO``.
 - ``listen()``: this function will transfer the state from ``CLOSED`` to ``LISTEN`` and set up the ``connQ``.
 - ``accept()``: this function will return the first socket in ``connQ`` and add it into ``tcpMan.sockets``. If ``state != State.LISTEN || connQ == null || connQ.size() == 0``, then ``null`` is returned. **It is important that before ``accept()`` is called, the newly created socket, though ``ESTABLISHED``, is not in ``sockets``, so the socket cannot be directly reached by ``TCPManager`` in ``findBestMatch()``**.
 - ``connect()``: this function will set ``this.remotePort`` and ``this.remoteAddr``, and then send a ``SYN`` packet with ``startSeq`` equal to a random number between 1 to 1000, and print out ``S``. It will transfer the state from ``CLOSED`` to ``SYN_SENT``. A timeout (1 sec) will be set to resend the ``SYN`` packet if ``ACK`` is not received timely.

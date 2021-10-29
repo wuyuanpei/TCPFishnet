@@ -1,5 +1,6 @@
 import java.util.ArrayList;
 import java.util.Iterator;
+
 import java.io.PrintStream;
 import java.lang.reflect.Method;
 
@@ -294,6 +295,7 @@ public class Node {
 
 			TCPSock sock = this.tcpMan.socket();
 			sock.bind(localPort);
+			sock.setCcAlgorithm(TCPSock.CCALGO.RENO); // choose CC algo to use
 			sock.connect(destAddr, port);
 			TransferClient client = new TransferClient(manager, this, sock, amount, interval, sz);
 			client.start();

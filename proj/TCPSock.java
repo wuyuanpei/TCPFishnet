@@ -31,8 +31,8 @@ public class TCPSock {
 	// TCP socket states
 	enum State {
 		// protocol states
-		CLOSED, LISTEN, SYN_SENT, ESTABLISHED, 
-		SHUTDOWN // close requested, FIN not sent (due to unsent data in queue); or receive FIN, but read window is not empty
+		CLOSED, LISTEN, SYN_SENT, ESTABLISHED, SHUTDOWN // close requested, FIN not sent (due to unsent data in queue);
+														// or receive FIN, but read window is not empty
 	}
 
 	private final long SYNTimeout = 1000; // resend SYN if timeout
@@ -101,7 +101,14 @@ public class TCPSock {
 
 	private int cwndCurrent = 0; // the current number of packets sent that has not been ACKed
 
-	private int windowAvail = BUFFER_SIZE * Transport.MAX_PAYLOAD_SIZE; // ACK will set this field to indicate available space in the client
+	private int windowAvail = BUFFER_SIZE * Transport.MAX_PAYLOAD_SIZE; // ACK will set this field to indicate available
+																		// space in the client
+
+	private CCALGO ccAlgo; // 0 for Reno and 1 for Cubic
+
+	public enum CCALGO {
+		RENO, CUBIC, NONE
+	}
 
 	// parameters for cubic
 	private boolean tcp_friendliness = true;
@@ -128,14 +135,14 @@ public class TCPSock {
 		ack_cnt = 0;
 	}
 
-	private double cubic_update(){
+	private double cubic_update() {
 
 		double cnt = 0;
 
 		ack_cnt += 1;
-		if(epoch_start <= 0) {
+		if (epoch_start <= 0) {
 			epoch_start = manager.now();
-			if(cwnd <= W_lastmax) {
+			if (cwnd <= W_lastmax) {
 				cubic_K = Math.cbrt((W_lastmax - cwnd) / cubic_C);
 				origin_point = W_lastmax;
 			} else {
@@ -147,12 +154,12 @@ public class TCPSock {
 		}
 		double t = manager.now() + dMin - epoch_start;
 		double target = origin_point + cubic_C * Math.pow(t - cubic_K, 3);
-		if(target > cwnd) {
+		if (target > cwnd) {
 			cnt = cwnd / (target - cwnd);
 		} else {
 			cnt = 100 * cwnd;
 		}
-		if(tcp_friendliness) {
+		if (tcp_friendliness) {
 			return cubic_tcp_friendliness(cnt);
 		}
 		return cnt;
@@ -161,9 +168,10 @@ public class TCPSock {
 	private double cubic_tcp_friendliness(double cnt) {
 		W_tcp = W_tcp + ((3 * cubic_beta) / (2 - cubic_beta)) * ack_cnt / cwnd;
 		ack_cnt = 0;
-		if(W_tcp > cwnd) {
+		if (W_tcp > cwnd) {
 			double max_cnt = cwnd / (W_tcp - cwnd);
-			if(cnt > max_cnt) return max_cnt;
+			if (cnt > max_cnt)
+				return max_cnt;
 		}
 		return cnt;
 	}
@@ -174,6 +182,7 @@ public class TCPSock {
 		this.manager = manager;
 
 		this.state = State.CLOSED;
+		this.ccAlgo = CCALGO.RENO;
 
 		this.localAddr = localAddr;
 		this.localPort = -1; // not set yet
@@ -230,6 +239,10 @@ public class TCPSock {
 		this.localPort = localPort;
 		this.tcpMan.registerSock(this);
 		return 0;
+	}
+
+	public void setCcAlgorithm(CCALGO ccAlgo) {
+		this.ccAlgo = ccAlgo;
 	}
 
 	/**
@@ -437,17 +450,18 @@ public class TCPSock {
 
 			int sendPktLen = Math.min(Transport.MAX_PAYLOAD_SIZE, contentLengthWWindow());
 
-			if(sendPktLen == 0) break; // nothing to send
+			if (sendPktLen == 0)
+				break; // nothing to send
 
 			byteSent += sendPktLen;
 
-			if(sendSomething == false) {
+			if (sendSomething == false) {
 				sendSomething = true;
 				seqFirst = sendSeq + sendPktLen;
 			}
 
 			byte tcpPayload[] = new byte[sendPktLen];
-			
+
 			readFromWWindow(tcpPayload, readWPointer);
 
 			readWPointer += sendPktLen;
@@ -474,11 +488,12 @@ public class TCPSock {
 		// timeout and resend data
 		debug("DATATimeout:" + DATATimeout);
 		// At least one packet is sent
-		if(sendSomething)
-			this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
-				new Object[] {Integer.valueOf(seqFirst), Integer.valueOf(sendSeq), Boolean.TRUE, Long.valueOf(manager.now())});
+		if (sendSomething)
+			this.addTimer(DATATimeout, "resendData",
+					new String[] { "java.lang.Integer", "java.lang.Integer", "java.lang.Boolean", "java.lang.Long" },
+					new Object[] { Integer.valueOf(seqFirst), Integer.valueOf(sendSeq), Boolean.TRUE,
+							Long.valueOf(manager.now()) });
 	}
-
 
 	long lastFireResend = -1;
 
@@ -494,42 +509,45 @@ public class TCPSock {
 			return;
 
 		// used to avoid resent problem
-		if(timeSet < lastFireResend){
+		if (timeSet < lastFireResend) {
 			return;
 		}
 
 		lastFireResend = manager.now();
 
-		//cwnd /= 2.0;
-		// for cubic
-		epoch_start = 0;
-		if(cwnd < W_lastmax && fast_convergence) {
-			W_lastmax = cwnd * (2.0 - cubic_beta) / 2.0;
-		} else {
-			W_lastmax = cwnd;
-		}
-		cwnd = cwnd * (1.0 - cubic_beta);
-		ssthresh = cwnd;
+		if (ccAlgo == CCALGO.RENO) {
+			cwnd /= 2.0; // MD
+		} else if (ccAlgo == CCALGO.CUBIC) {
+			// for cubic
+			epoch_start = 0;
+			if (cwnd < W_lastmax && fast_convergence) {
+				W_lastmax = cwnd * (2.0 - cubic_beta) / 2.0;
+			} else {
+				W_lastmax = cwnd;
+			}
+			cwnd = cwnd * (1.0 - cubic_beta);
+			ssthresh = cwnd;
 
-		if(isTimeout) 
-			cubic_reset();
+			if (isTimeout)
+				cubic_reset();
+
+		}
 
 		outW("" + cwnd);
 
-		/*if(isTimeout)
-			System.out.println(cwnd);
-		else
-			System.out.println(cwnd);*/
+		/*
+		 * if(isTimeout) System.out.println(cwnd); else System.out.println(cwnd);
+		 */
 
 		int resendSeq = baseSeq;
 
-		debug("lastSendSeqI=" + firstSendSeqI.intValue() + " resendSeq=" +resendSeq);
+		debug("lastSendSeqI=" + firstSendSeqI.intValue() + " resendSeq=" + resendSeq);
 
 		printSeqNumbers();
-		
+
 		long tmpPointer = readSafeWPointer;
-		
-		for(int i = 0; i < seqNumbers.size(); i++) {
+
+		for (int i = 0; i < seqNumbers.size(); i++) {
 
 			int sendPktLen = seqNumbers.get(i) - resendSeq;
 
@@ -554,11 +572,12 @@ public class TCPSock {
 		}
 		// timeout and resend data
 		debug("DATAResendTimeout:" + DATATimeout);
-	
-		this.addTimer(DATATimeout, "resendData", new String[] {"java.lang.Integer", "java.lang.Integer", "java.lang.Boolean", "java.lang.Long"}, 
-			new Object[] {firstSendSeqI, Integer.valueOf(resendSeq), isTimeout, Long.valueOf(manager.now())});
 
-	} 
+		this.addTimer(DATATimeout, "resendData",
+				new String[] { "java.lang.Integer", "java.lang.Integer", "java.lang.Boolean", "java.lang.Long" },
+				new Object[] { firstSendSeqI, Integer.valueOf(resendSeq), isTimeout, Long.valueOf(manager.now()) });
+
+	}
 
 	/**
 	 * Read from the socket up to len bytes into the buffer buf starting at position
@@ -579,7 +598,7 @@ public class TCPSock {
 			buf[pos + i] = readWindow[(int) ((readPointer++) % (long) readWindow.length)];
 		}
 
-		if(state == State.SHUTDOWN && writePointer == readPointer) {
+		if (state == State.SHUTDOWN && writePointer == readPointer) {
 			release();
 		}
 		return readLen;
@@ -674,7 +693,8 @@ public class TCPSock {
 				connectionSock.remotePort = srcPort;
 				connectionSock.state = State.ESTABLISHED;
 				connectionSock.baseSeq = seq + 1; // the first expected data seq
-				//connectionSock.sendSeq = seq + 1; // For the server, nextSeq is always equal to startSeq
+				// connectionSock.sendSeq = seq + 1; // For the server, nextSeq is always equal
+				// to startSeq
 
 				connQ.add(connectionSock); // new socket always appends at the end
 			}
@@ -685,7 +705,7 @@ public class TCPSock {
 		else if (type == Transport.ACK) {
 
 			// record seq for triple duplicate ACK
-			if(lastAck == seq) {
+			if (lastAck == seq) {
 				ackTimes++;
 			} else {
 				lastAck = seq;
@@ -694,9 +714,9 @@ public class TCPSock {
 
 			boolean doRetransmission = false;
 			// The fourth time
-			if(ackTimes == 4) {
+			if (ackTimes == 4) {
 				doRetransmission = true;
-			} 
+			}
 
 			// ACK for SYN
 			if (state == State.SYN_SENT) {
@@ -720,25 +740,19 @@ public class TCPSock {
 					int numberOfSeqsToClear = seqNumbers.indexOf(seq) + 1;
 
 					// remove lost ACKs
-					for(int i = 0; i < numberOfSeqsToClear; i++) {
+					for (int i = 0; i < numberOfSeqsToClear; i++) {
 						int lostACKs = seqNumbers.remove(0);
-						if(i != numberOfSeqsToClear - 1) {
+						if (i != numberOfSeqsToClear - 1) {
 							sampleRTTs.remove(lostACKs);
 						}
 					}
 
-					debug("receive ACK:"+seq);
+					debug("receive ACK:" + seq);
 					printSeqNumbers();
 					readSafeWPointer += seq - baseSeq; // increment by the length of the packet
 					baseSeq = seq;
-					
+
 					out(":");
-					
-					
-					// AI
-					//cwnd += 1.0/cwnd;
-					//System.out.println(cwnd);
-					
 
 					cwndCurrent -= numberOfSeqsToClear;
 
@@ -751,34 +765,38 @@ public class TCPSock {
 						estRTT = sampleRTT;
 						devRTT = sampleRTT;
 						DATATimeout = estRTT + 4 * devRTT;
-					}
-					else {
+					} else {
 						estRTT = (long) ((1.0 - alpha) * ((double) estRTT) + alpha * (double) sampleRTT);
-						devRTT = (long) ((1.0 - beta) * ((double) devRTT) + beta * (double) Math.abs(sampleRTT - estRTT));
+						devRTT = (long) ((1.0 - beta) * ((double) devRTT)
+								+ beta * (double) Math.abs(sampleRTT - estRTT));
 						DATATimeout = estRTT + 4 * devRTT;
 					}
-					
-					// for cubic
-					if(dMin != 0) {
-						dMin = Math.min(dMin, estRTT);
-					} else {
-						dMin = estRTT;
-					}
 
-					if(cwnd <= ssthresh) {
-						cwnd += 1;
-					} else {
-						double cnt = cubic_update();
-						if(cwnd_cnt > cnt){
-							cwnd += 1;
-							cwnd_cnt = 0;
+					// AI
+					if (ccAlgo == CCALGO.RENO) {
+						cwnd += 1.0 / cwnd;
+					} else if (ccAlgo == CCALGO.CUBIC) {
+						// for cubic
+						if (dMin != 0) {
+							dMin = Math.min(dMin, estRTT);
 						} else {
-							cwnd_cnt += 1;
+							dMin = estRTT;
+						}
+
+						if (cwnd <= ssthresh) {
+							cwnd += 1;
+						} else {
+							double cnt = cubic_update();
+							if (cwnd_cnt > cnt) {
+								cwnd += 1;
+								cwnd_cnt = 0;
+							} else {
+								cwnd_cnt += 1;
+							}
 						}
 					}
+					outW("" + cwnd);
 
-					outW(""+cwnd);
-					
 					this.windowAvail = windowClient;
 					tryToSend();
 
@@ -788,7 +806,7 @@ public class TCPSock {
 				else {
 					out("?");
 					// do retransmission
-					if(doRetransmission && seqNumbers.size() > 0) {
+					if (doRetransmission && seqNumbers.size() > 0) {
 						resendData(seqNumbers.get(0), seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
 					}
 					return;
@@ -802,23 +820,19 @@ public class TCPSock {
 					int numberOfSeqsToClear = seqNumbers.indexOf(seq) + 1;
 
 					// remove lost ACKs
-					for(int i = 0; i < numberOfSeqsToClear; i++) {
+					for (int i = 0; i < numberOfSeqsToClear; i++) {
 						int lostACKs = seqNumbers.remove(0);
-						if(i != numberOfSeqsToClear - 1) {
+						if (i != numberOfSeqsToClear - 1) {
 							sampleRTTs.remove(lostACKs);
 						}
 					}
 
-					debug("receive ACK:"+seq);
+					debug("receive ACK:" + seq);
 					printSeqNumbers();
 					readSafeWPointer += seq - baseSeq; // increment by the length of the packet
 					baseSeq = seq;
 
 					out(":");
-
-					// AI
-					//cwnd += 1.0/cwnd;
-					//System.out.println(cwnd);
 
 					cwndCurrent -= numberOfSeqsToClear;
 
@@ -831,29 +845,34 @@ public class TCPSock {
 						estRTT = sampleRTT;
 						devRTT = sampleRTT;
 						DATATimeout = estRTT + 4 * devRTT;
-					}
-					else {
+					} else {
 						estRTT = (long) ((1.0 - alpha) * ((double) estRTT) + alpha * (double) sampleRTT);
-						devRTT = (long) ((1.0 - beta) * ((double) devRTT) + beta * (double) Math.abs(sampleRTT - estRTT));
+						devRTT = (long) ((1.0 - beta) * ((double) devRTT)
+								+ beta * (double) Math.abs(sampleRTT - estRTT));
 						DATATimeout = estRTT + 4 * devRTT;
 					}
 
-					// for cubic
-					if(dMin != 0) {
-						dMin = Math.min(dMin, estRTT);
-					} else {
-						dMin = estRTT;
-					}
-
-					if(cwnd <= ssthresh) {
-						cwnd += 1;
-					} else {
-						double cnt = cubic_update();
-						if(cwnd_cnt > cnt){
-							cwnd += 1;
-							cwnd_cnt = 0;
+					// AI
+					if (ccAlgo == CCALGO.RENO) {
+						cwnd += 1.0 / cwnd;
+					} else if (ccAlgo == CCALGO.CUBIC) {
+						// for cubic
+						if (dMin != 0) {
+							dMin = Math.min(dMin, estRTT);
 						} else {
-							cwnd_cnt += 1;
+							dMin = estRTT;
+						}
+
+						if (cwnd <= ssthresh) {
+							cwnd += 1;
+						} else {
+							double cnt = cubic_update();
+							if (cwnd_cnt > cnt) {
+								cwnd += 1;
+								cwnd_cnt = 0;
+							} else {
+								cwnd_cnt += 1;
+							}
 						}
 					}
 
@@ -861,9 +880,9 @@ public class TCPSock {
 
 					this.windowAvail = windowClient;
 					tryToSend();
-					
+
 					close(); // call close again
-					
+
 					return;
 				}
 				// Not the expected ACK
@@ -871,7 +890,7 @@ public class TCPSock {
 					out("?");
 
 					// do retransmission
-					if(doRetransmission && seqNumbers.size() > 0) {
+					if (doRetransmission && seqNumbers.size() > 0) {
 						resendData(seqNumbers.get(0), seqNumbers.get(0), Boolean.FALSE, Long.valueOf(manager.now()));
 					}
 
@@ -930,8 +949,8 @@ public class TCPSock {
 					debug("receive:" + seq);
 
 					// send ACK (no need to time out at the server side)
-					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK, availableWindowSize() - packetPayload.length,
-							baseSeq, new byte[0]);
+					Transport connAckPacket = new Transport(destPort, srcPort, Transport.ACK,
+							availableWindowSize() - packetPayload.length, baseSeq, new byte[0]);
 					byte connAckByte[] = connAckPacket.pack();
 					Packet ackPacket = new Packet(srcAddr, destAddr, Packet.MAX_TTL, Protocol.TRANSPORT_PKT,
 							node.currentPacketSeq++, connAckByte);
@@ -972,7 +991,7 @@ public class TCPSock {
 		else if (type == Transport.FIN) {
 			// simply release itself
 			out("F");
-			if(readPointer != writePointer) { // still need to be read
+			if (readPointer != writePointer) { // still need to be read
 				state = State.SHUTDOWN;
 			} else {
 				release();
@@ -1042,38 +1061,37 @@ public class TCPSock {
 
 	public static final boolean _TRACK_CWND = false;
 
-	
 	public void printSeqNumbers() {
 
-		if(!_DEBUG) return;
+		if (!_DEBUG)
+			return;
 
 		System.out.print("{");
-		for(int i = 0; i < seqNumbers.size(); i++) {
+		for (int i = 0; i < seqNumbers.size(); i++) {
 			System.out.print(seqNumbers.get(i));
-			if(i != seqNumbers.size() - 1) {
+			if (i != seqNumbers.size() - 1) {
 				System.out.print(",");
 			}
 		}
 		System.out.println("}");
-		
+
 	}
 
 	public static void debug(String s) {
-		if(_DEBUG)
+		if (_DEBUG)
 			System.out.println(s);
 	}
 
 	public static void out(String s) {
-		if(_OUT) {
+		if (_OUT) {
 			System.out.print(s);
 			System.out.flush();
 		}
 	}
 
 	public static void outW(String s) {
-		if(_TRACK_CWND)
+		if (_TRACK_CWND)
 			System.out.println(s);
 	}
-
 
 }
